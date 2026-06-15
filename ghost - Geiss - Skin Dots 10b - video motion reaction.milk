@@ -1,0 +1,136 @@
+// Derived from source preset: "Geiss - Skin Dots 10b.milk"
+// Adds: live video injected into the warp-shader feedback, gated by
+// motion detection inside a soft-edged circle, with a bass zoom pulse
+// and treble-driven video reveal.
+MILKDROP_PRESET_VERSION=201
+PSVERSION=2
+PSVERSION_WARP=2
+PSVERSION_COMP=2
+[preset00]
+fRating=5.000000
+fGammaAdj=1.000000
+fDecay=0.9999900000
+fVideoEchoZoom=2.000000
+fVideoEchoAlpha=0.000000
+nVideoEchoOrientation=0
+nWaveMode=0
+bAdditiveWaves=0
+bWaveDots=0
+bWaveThick=0
+bModWaveAlphaByVolume=1
+bMaximizeWaveColor=1
+bTexWrap=1
+bDarkenCenter=0
+bRedBlueStereo=0
+bBrighten=0
+bDarken=0
+bSolarize=0
+bInvert=0
+fWaveAlpha=0
+fWaveScale=0.397108
+fWaveSmoothing=0.000000
+fWaveParam=0.240000
+fModWaveAlphaStart=0.750000
+fModWaveAlphaEnd=1.170000
+fWarpAnimSpeed=0.451118
+fWarpScale=3.039840
+fZoomExponent=2.194764
+fShader=0.000000
+#zoom=1.079709
+zoom=1.01
+rot=0.000000
+cx=0.500000
+cy=0.500000
+dx=0.000000
+dy=0.000000
+warp=0.098617
+sx=1.000000
+sy=1.000000
+wave_r=1.000000
+wave_g=0.999999
+wave_b=1.000000
+wave_x=0.500000
+wave_y=0.500000
+ob_size=0.010000
+ob_r=0.000000
+ob_g=0.000000
+ob_b=0.000000
+ob_a=0.000000
+ib_size=0.010000
+ib_r=0.250000
+ib_g=0.250000
+ib_b=0.250000
+ib_a=0.000000
+nMotionVectorsX=64.000000
+nMotionVectorsY=48.000000
+mv_dx=0.000000
+mv_dy=0.000000
+mv_l=0.000000
+mv_r=0.350000
+mv_g=0.350000
+mv_b=0.350000
+mv_a=0.000000
+b1n=0.000000
+b2n=0.000000
+b3n=0.000000
+b1x=1.000000
+b2x=1.000000
+b3x=1.000000
+b1ed=0.250000
+
+wavecode_0_enabled=0
+wavecode_1_enabled=0
+wavecode_2_enabled=0
+wavecode_3_enabled=0
+shapecode_0_enabled=0
+shapecode_1_enabled=0
+shapecode_2_enabled=0
+shapecode_3_enabled=0
+per_frame_1=wave_r = wave_r + 0.350*( 0.60*sin(0.980*time) + 0.40*sin(1.047*time) );
+per_frame_2=wave_g = wave_g + 0.350*( 0.60*sin(0.835*time) + 0.40*sin(1.081*time) );
+per_frame_3=wave_b = wave_b + 0.350*( 0.60*sin(0.814*time) + 0.40*sin(1.011*time) );
+per_frame_4=cx = cx + 0.110*( 0.60*sin(0.374*time) + 0.40*sin(0.294*time) );
+per_frame_5=cy = cy + 0.110*( 0.60*sin(0.393*time) + 0.40*sin(0.223*time) );
+per_frame_6=decay = decay - 0.01*equal(frame%20,0);
+#per_frame_7=zoom = zoom + 5.2*(0.01*cos(time*0.317+1) + 0.01*cos(time*0.1132+4)) + (bass_att - 1)*0.05;
+per_frame_7=zoom = zoom + 0.2*(0.01*cos(time*0.317+1) + 0.01*cos(time*0.1132+4)) + (bass_att - 1)*0.05;
+per_frame_8=rot  = rot  + 0.5*(0.01*cos(time*0.214+3) + 0.01*cos(time*0.2732+2));
+per_frame_9=wave_mystery = time*0.05;
+per_frame_10=// --- video motion detection ---
+per_frame_11=// Mode 3: library computes per-pixel video alpha as the RGB-difference
+per_frame_12=// magnitude vs. the previous video frame, scaled by video_alpha_value.
+per_frame_13=video_alpha_mode = 3;
+per_frame_14=video_alpha_value = 1.0;
+per_frame_15=video_alpha_init = 0.0;
+
+
+warp_1=`shader_body
+warp_2=`{
+warp_3=`    // sample previous frame
+warp_4=`    float4 tex = tex2D( sampler_main, uv );
+warp_5=`    ret = tex.rgb;
+warp_6=`    float frame_alpha = tex.a;
+warp_7=`    float video_alpha = GetVideo(uv, 0.0).a;
+warp_8=`
+warp_9=`    // take the difference between the crisp and blurred images,
+warp_10=`   // then add it back into the image.  Creates spots and stripes over time.
+warp_11=`   ret = saturate(ret + (ret - GetBlur1(uv))*0.15);
+warp_12=`   ret *= saturate(0.9 + video_alpha); // slow decay to keep the globs from getting too bright
+warp_13=`
+warp_14=`   // add noise:
+warp_15=`   float2 dither_uv = uv_orig*texsize.xy*texsize_noise_lq.zw * 0.4 + rand_frame.xy;
+warp_16=`   float3 noise = tex2D(sampler_noise_lq, dither_uv).xyz-0.5;
+warp_17=`   noise = noise * 112.0/225.0 * saturate(video_alpha);
+warp_18=`   ret += noise;
+warp_19=`
+warp_20=`   // desaturate over time, to keep the globs white
+warp_21=`   //ret = lerp(ret, lum(ret), 0.05 * (1.0 - video_alpha));
+warp_22=`   ret = lerp(ret, 0.3, 0.1 * (1.0 - video_alpha));
+warp_23=`}
+
+
+
+comp_1=`shader_body
+comp_2=`{
+comp_3=`    ret = tex2D(sampler_main, uv).xyz;    
+comp_4=`}
