@@ -415,6 +415,7 @@ shader_body
 warp_1=```
 shader_body
 {
+
     float3 txr = float3(uv,q1*0.1);
     float2  uv2 =  uv;
     uv2 = uv + texsize.zx*(q3,q3);
@@ -430,20 +431,19 @@ shader_body
 
     ret = tex2D( sampler_main, mul(((uv-0.5)*(0.97 + rad*0.02)),rot) + 0.5  
           + GetBlur1((uv - 0.5)*0.9 + 0.5)*(uv.y*0.1)  - 0.01).xyz;    
-    float4 noise9 = tex3D(sampler_noisevol_hq, 
+float4 noise9 = tex3D(sampler_noisevol_hq, 
                       ((uv.xyy*q27
                        )*texsize.xyy*texsize_noisevol_hq.zww
                       ).xyz*
                       float3(1,1,0)*0.05 + 
                       time*float3(0,0,1)*q29
                      );
-    if(ret.x> q21*q13         && ret.x<= q24*q11        )ret.y += (noise9).x*.5; 
-    if(ret.y> q22*q11         && ret.y<= q25*q12        )ret.z += (noise9).y*.5; 
-    if(ret.z> q23*q12         && ret.z<= q26*q13        )ret.x += (noise9).z*.5; 
+if(ret.x> q21*q13         && ret.x<= q24*q11        )ret.y += (noise9).x*.5; 
+if(ret.y> q22*q11         && ret.y<= q25*q12        )ret.z += (noise9).y*.5; 
+if(ret.z> q23*q12         && ret.z<= q26*q13        )ret.x += (noise9).z*.5; 
     ret = ret-0.001;// - 0.08; //or try: ret -= 0.004;
 }
 ```
-
 comp_1=```
 shader_body
 {
@@ -483,12 +483,28 @@ shader_body
     float age = (60/max(beat_bpm,60)) / max(video_buffer_seconds,1);
 
     if (GetVideo(vuv,2*age).a > 0.1) 
-        ret = saturate((1.0 - ret) * lerp(1.0, float3(1.0, 0.62, 0.40), 0.6));
+        ret = saturate((1.0 - ret) *lerp(1.0, float3(1.0, 0.62, 0.40), 0.6));
 
     if (GetVideo(vuv,age).a > 0.1) 
-        ret = saturate((1.0 - ret) * lerp(1.0, float3(1.0, 0.62, 0.40), 0.4));
+        ret = saturate((1.0 - ret) *lerp(1.0, float3(1.0, 0.62, 0.40), 0.4));
 
-    if (GetVideo(vuv,0.0).a > 0.1)
-        ret = saturate((1.0 - ret) * lerp(1.0, float3(1.0, 0.62, 0.40), 0.2));
+    if (GetVideo(vuv,0.0).a > 0.1) 
+        ret = saturate((1.0 - ret) *lerp(1.0, float3(1.0, 0.62, 0.40), 0.2));
+
+    // float age = (60/max(beat_bpm,60)) / max(video_buffer_seconds,1);
+    // float2 vuv = float2(0.5 + abs(uv.x - 0.5), uv.y); 
+    // float vmotion = MaskMotion(vuv) * MaskSeg(vuv);   // split mirror: right half reflected onto left
+    // float vthreshold = 0.1;
+    // if (vmotion > vthreshold) 
+    // {
+    //     // The clean complement is what actually carries the underlying colors,
+    //     // so keep most of it and apply only a gentle orange C-41 film bias on top.
+    //     // A full orange-mask multiply (what real negatives have) flattens everything
+    //     // toward one tint, so we lerp toward it instead of multiplying.
+    //     float3 neg = 1.0 - ret;
+    //     float filminess = 0.35;   // 0 = pure inverted color, 1 = full orange cast
+    //     neg = lerp(neg, neg * float3(1.0, 0.62, 0.40), filminess);
+    //     ret = saturate(neg);
+    // }
 }
 ```
