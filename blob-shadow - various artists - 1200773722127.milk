@@ -463,8 +463,11 @@ shader_body
     //    blob_ = blob_ * (0.9+cos(beat_phase)*0.2);
     // don't fill in the blob on the off beat
     ret = lerp(ret, float3(0, 0, 0), blob_ - mask_seg);
-    float2 noise_uv = float2(uv.x+rand_frame.x*uv.y, uv.y+time*uv.x);
-    ret += mask_seg * beat * (tex2D(sampler_noise_lq, noise_uv)-0.5);
+    if (beat_onset>0)
+    {
+      float2 noise_uv = float2(uv.x+rand_frame.x*uv.y, uv.y+time*uv.x);
+      ret += mask_seg * beat_onset * (tex2D(sampler_noise_lq, noise_uv)-0.5);
+    }
     ret_a = mask_seg;
 }
 ```
