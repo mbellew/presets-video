@@ -3,7 +3,7 @@
 // Every ~1/2 s a new "page" is drawn: the warp shader runs ONE of four artistic
 // filters over the incoming video (picked once per preset from rand_preset, so a
 // given run stays in one style):
-//   0 watercolor  - Kuwahara flatten + saturate + posterize; seg-darkened bg
+//   0 watercolor  - Kuwahara flatten + saturate + posterize; seg-whitened bg
 //   1 charcoal    - Sobel strokes + tonal shading + paper grain on warm paper
 //   2 line drawing - multi-scale Sobel contours + posterized ink wash (subject)
 //   3 comic book  - CMYK-quantised cels + Ben-Day halftone + ink; desaturated bg
@@ -41,90 +41,120 @@ wave_a=0
 
 per_frame_init_1=last_t = 0;
 per_frame_init_2=pstart = -1;
+per_frame_init_3=fired = 0;
+per_frame_init_4=blanked = 0;
 
 // Straight video copy, no library-computed alpha.
 per_frame_1=video_alpha_mode = 0;
 per_frame_2=video_alpha_value = 1.0;
 per_frame_3=video_alpha_init = 0.0;
 
-// --- flip-book timing ---
-per_frame_4=P = 0.4;      // page period (2 fps)
-per_frame_5=FW = 0.15;    // page-turn duration
+// --- lifetime timeline (computed first: it drives the flip cadence below) ---
+// hold (normal flipbook) -> zoom in -> a flurry of blank end-pages -> end.
+per_frame_4=pstart = if(below(pstart, 0), time, pstart);   // capture preset start once
+per_frame_5=age = time - pstart;                            // seconds since preset start
+per_frame_6=THOLD = 12.0;      // normal flipbook
+per_frame_7=TZOOM = 2.0;       // zoom-in lead-in
+per_frame_8=TBLANK = 1.1;      // blank end-page flurry
+per_frame_9=zend = THOLD + TZOOM;
+per_frame_10=blank = above(age, zend);                     // 1 during the blank end-pages
+per_frame_11=enterblank = blank * equal(blanked, 0);       // one-shot: first blank frame
+per_frame_12=blanked = if(blank, 1, blanked);
+per_frame_13=q6 = blank;                                   // shaders: bake / show blank pages
+per_frame_14=q4 = if(blank, 0, max(0, min((age - THOLD) / TZOOM, 1)));  // zoom (0 once blank)
 
-// New cycle when a full period has elapsed. nc is a clean one-shot (1 only on
-// the frame we reset last_t), so the new page bakes IMMEDIATELY at the turn.
-per_frame_6=nc = above(time - last_t, P);
-per_frame_7=last_t = if(nc, time, last_t);
-per_frame_8=u = time - last_t;                    // time since this page turn began
+// --- flip cadence ---
+// When the beat tracker is CONFIDENT (beat_conf), sync page turns to beat_onset
+// (debounced by PMIN, with a PMAX fallback so it never stalls). When confidence is
+// low, ignore beats and turn on a steady 0.4s. The blank end-flurry stays fast+fixed.
+per_frame_15=FW = 0.15;                  // page-turn duration
+per_frame_16=PMIN = 0.18;                // min seconds between beat-triggered flips
+per_frame_17=PMAX = 1.2;                 // turn anyway if this long passes with no beat
+per_frame_18=hiconf = above(beat_conf, 0.5);                       // beat tracker confident?
+per_frame_19=ncbeat = above(beat_onset, 0.5) * above(time - last_t, PMIN);
+per_frame_20=ncsync = max(ncbeat, above(time - last_t, PMAX));     // beat mode (+ silence fallback)
+per_frame_21=ncsteady = above(time - last_t, 0.4);                 // low-confidence steady cadence
+per_frame_22=nc = if(blank, above(time - last_t, 0.28), if(hiconf, ncsync, ncsteady));
+// Also start a fresh page-turn (reset last_t) on the FIRST blank frame, so the
+// zoomed page cuts straight into a blank turn (no un-zoomed filtered frame flashes).
+per_frame_23=last_t = if(max(nc, enterblank), time, last_t);
+per_frame_24=u = time - last_t;                   // time since this page turn began
+per_frame_25=q1 = max(max(nc, enterblank), below(age, 0.06));  // warp: bake a new page now (age is per-preset; frame is global)
+per_frame_26=q3 = min(u / FW, 1) * 1.5708;        // comp: page-turn angle 0..pi/2
 
-per_frame_9=q1 = max(nc, below(frame, 2));        // warp: bake the new page now
-per_frame_10=q3 = min(u / FW, 1) * 1.5708;        // comp: page-turn angle 0..pi/2
-
-// --- short-flipbook lifetime: hold, then zoom into center to a monocolor, end ---
-per_frame_11=pstart = if(below(pstart, 0), time, pstart);   // capture preset start once
-per_frame_12=age = time - pstart;                           // seconds since preset start
-per_frame_13=THOLD = 12.0;                                   // normal flipbook
-per_frame_14=TZOOM = 2.0;                                   // zoom-in to monocolor
-per_frame_15=q4 = max(0, min((age - THOLD) / TZOOM, 1));    // comp: zoom progress 0..1
-// Ask projectM to switch away once the zoom has fully resolved (+ brief hold).
-per_frame_16=preset_complete = above(age, THOLD + TZOOM + 0.4);
+// --- end after the blank flurry (ONE-SHOT: preset_complete is a latch the engine
+// clears each frame; assert it for exactly one frame so it switches once cleanly) ---
+per_frame_27=done = above(age, zend + TBLANK + 0.2);
+per_frame_28=preset_complete = done * equal(fired, 0);
+per_frame_29=fired = if(done, 1, fired);
 
 warp_1=```
 shader_body
 {
     if (q1 > 0.5)
     {
-        // Pick one of four artistic filters per preset. rand_preset is a random
-        // float4 constant for the preset's lifetime, so the whole flipbook stays
-        // in one style (each ~25%).
-        if (rand_preset.x < 0.25)
+        if (q6 > 0.5)
         {
-        // --- FILTER 0 - watercolor: Kuwahara, pick the flattest quadrant ---
-        float2 px = texsize.zw * 3.0;   // sample step (bigger = fatter brush)
-        float minv_ = 1e9;
-        float3 best_ = float3(0, 0, 0);
-        int si_; int sj_; int i_; int j_;
-        for (si_ = -1; si_ <= 1; si_ = si_ + 2)
+            // blank end-of-book page (the closing "empty pages" flurry)
+            ret = float3(0.98, 0.97, 0.95);
+        }
+        else
         {
-            for (sj_ = -1; sj_ <= 1; sj_ = sj_ + 2)
+        // Pick one of five artistic filters per preset. filt_ is a 0..4 enum:
+        //   0 watercolor   1 charcoal   2 line   3 comic   4 take-on-me
+        // Set it to a literal to hardcode a filter, or int(rand_preset.x * 5.0)
+        // for a random per-preset choice (rand_preset is constant per preset).
+        int filt_ = int(floor(rand_preset.x * 4.9999));
+        //int filt_ = 0;
+        if (filt_ == 0)
+        {
+            // --- FILTER 0 - watercolor: Kuwahara, pick the flattest quadrant ---
+            float2 px = texsize.zw * 3.0;   // sample step (bigger = fatter brush)
+            float minv_ = 1e9;
+            float3 best_ = float3(0, 0, 0);
+            int si_; int sj_; int i_; int j_;
+            for (si_ = -1; si_ <= 1; si_ = si_ + 2)
             {
-                float3 sum_ = float3(0, 0, 0);
-                float ls_ = 0.0;
-                float l2_ = 0.0;
-                for (i_ = 0; i_ <= 4; i_ = i_ + 1)
+                for (sj_ = -1; sj_ <= 1; sj_ = sj_ + 2)
                 {
-                    for (j_ = 0; j_ <= 4; j_ = j_ + 1)
+
+                    float3 sum_ = float3(0, 0, 0);
+                    float ls_ = 0.0;
+                    float l2_ = 0.0;
+                    for (i_ = 0; i_ <= 4; i_ = i_ + 1)
                     {
-                        float2 o_ = float2(float(si_ * i_), float(sj_ * j_)) * px;
-                        float3 c_ = GetVideo(uv + o_, 0.0).rgb;
-                        float l_ = dot(c_, float3(0.299, 0.587, 0.114));
-                        sum_ = sum_ + c_;
-                        ls_  = ls_ + l_;
-                        l2_  = l2_ + l_ * l_;
+                        for (j_ = 0; j_ <= 4; j_ = j_ + 1)
+                        {
+                            float2 o_ = float2(float(si_ * i_), float(sj_ * j_)) * px;
+                            float3 c_ = GetVideo(uv + o_, 0.0).rgb;
+                            float l_ = dot(c_, float3(0.299, 0.587, 0.114));
+                            sum_ = sum_ + c_;
+                            ls_  = ls_ + l_;
+                            l2_  = l2_ + l_ * l_;
+                        }
                     }
+                    float n_ = 25.0;
+                    float3 mean_ = sum_ / n_;
+                    float var_ = l2_ / n_ - (ls_ / n_) * (ls_ / n_);
+                    if (var_ < minv_) { minv_ = var_; best_ = mean_; }
                 }
-                float n_ = 25.0;
-                float3 mean_ = sum_ / n_;
-                float var_ = l2_ / n_ - (ls_ / n_) * (ls_ / n_);
-                if (var_ < minv_) { minv_ = var_; best_ = mean_; }
             }
-        }
-        ret = best_;
+            ret = best_;
 
-        // --- push it: contrast, then heavy saturation, then posterize ---
-        ret = saturate((ret - 0.5) * 1.35 + 0.5);          // contrast punch
-        float g_ = dot(ret, float3(0.299, 0.587, 0.114));  // luminance
-        ret = saturate(lerp(float3(g_, g_, g_), ret, 2.2)); // crank saturation
-        ret = floor(ret * 5.0 + 0.5) / 5.0;                // 5 paint bands / channel
+            // --- push it: contrast, then heavy saturation, then posterize ---
+            ret = saturate((ret - 0.5) * 1.35 + 0.5);          // contrast punch
+            float g_ = dot(ret, float3(0.299, 0.587, 0.114));  // luminance
+            ret = saturate(lerp(float3(g_, g_, g_), ret, 2.2)); // crank saturation
+            ret = floor(ret * 5.0 + 0.5) / 5.0;                // 5 paint bands / channel
 
-        // --- pop the subject: darken + desaturate the background (seg mask) ---
-        // seg_ ~ 1 on the person, ~ 0 on the background.
-        float seg_ = MaskSeg(uv);
-        float bl_ = dot(ret, float3(0.299, 0.587, 0.114));
-        float3 bg_ = lerp(float3(bl_, bl_, bl_), ret, 0.25) * 0.4; // grayer + darker
-        ret = lerp(bg_, ret, seg_);
+            // --- pop the subject: push the background toward white paper (seg mask) ---
+            // seg_ ~ 1 on the person, ~ 0 on the background.
+            float seg_ = MaskSeg(uv);
+            float3 paper_ = float3(0.98, 0.97, 0.95);
+            float3 bg_ = lerp(paper_, ret, 0.35);   // background = mostly white, faint ghost
+            ret = lerp(bg_, ret, seg_);
         }
-        else if (rand_preset.x < 0.5)
+        else if (filt_ == 1)
         {
             // --- FILTER 1 - charcoal / pencil sketch ---
             // Sobel edges on video luminance -> dark strokes on warm paper, with
@@ -158,7 +188,7 @@ shader_body
             tone_ = saturate(tone_);
             ret = tone_ * float3(1.0, 0.98, 0.95);                 // warm paper tint
         }
-        else if (rand_preset.x < 0.75)
+        else if (filt_ == 2)
         {
             // --- FILTER 2 - line drawing / pen-and-ink ---
             // Denser multi-scale Sobel contours PLUS diagonal cross-hatching that
@@ -209,7 +239,7 @@ shader_body
             float tone_ = saturate(0.97 - ink_ * 0.9);       // black ink on clean paper
             ret = float3(tone_, tone_, tone_);
         }
-        else
+        else if (filt_ == 3)
         {
             // --- FILTER 3 - comic book: flat cels + Ben-Day halftone + ink ---
             float3 L_ = float3(0.299, 0.587, 0.114);
@@ -258,6 +288,68 @@ shader_body
 
             ret = saturate(col_);
         }
+        else
+        {
+            // --- FILTER 4 - "Take On Me" pencil rotoscope ---
+            // B&W sketch: contour lines + loose back-and-forth pencil shading,
+            // with a per-page "boil" - the sample coords jitter each baked page,
+            // so the lines wobble page-to-page like hand-traced rotoscope.
+            float3 L_ = float3(0.299, 0.587, 0.114);
+
+            // per-page boil: offset the read by low-freq noise that changes each bake
+            float2 jn_ = tex2D(sampler_noise_lq, uv * 2.0 + rand_frame.xy).xy - 0.5;
+            float2 juv = uv + jn_ * texsize.zw * 7.0;
+
+            // Sobel contours on the jittered image
+            float2 e_ = texsize.zw * 1.6;
+            float s00 = dot(GetVideo(juv + float2(-e_.x, -e_.y), 0.0).rgb, L_);
+            float s10 = dot(GetVideo(juv + float2( 0.0,  -e_.y), 0.0).rgb, L_);
+            float s20 = dot(GetVideo(juv + float2( e_.x, -e_.y), 0.0).rgb, L_);
+            float s01 = dot(GetVideo(juv + float2(-e_.x,  0.0),  0.0).rgb, L_);
+            float s11 = dot(GetVideo(juv,                        0.0).rgb, L_);
+            float s21 = dot(GetVideo(juv + float2( e_.x,  0.0),  0.0).rgb, L_);
+            float s02 = dot(GetVideo(juv + float2(-e_.x,  e_.y), 0.0).rgb, L_);
+            float s12 = dot(GetVideo(juv + float2( 0.0,   e_.y), 0.0).rgb, L_);
+            float s22 = dot(GetVideo(juv + float2( e_.x,  e_.y), 0.0).rgb, L_);
+            float sx_ = (s20 + 2.0 * s21 + s22) - (s00 + 2.0 * s01 + s02);
+            float sy_ = (s02 + 2.0 * s12 + s22) - (s00 + 2.0 * s10 + s20);
+            float line_ = smoothstep(0.07, 0.22, sqrt(sx_ * sx_ + sy_ * sy_));
+
+            // loose back-and-forth pencil shading: ONE scribble direction whose
+            // stroke lines wave and wander (noise), so it reads as gestural
+            // graphite fill rather than a mechanical hatch grid.
+            float dark_ = saturate((1.0 - s11 - 0.05) * 1.25);
+            float2 hp = (uv + jn_ * texsize.zw * 4.0) * texsize.xy;   // boils a touch too
+            float2 dir_ = float2(0.86, 0.51);                        // scribble direction (~30 deg)
+            float along_  = dot(hp, dir_);
+            float across_ = dot(hp, float2(-dir_.y, dir_.x));
+            // wave the stroke position + add noise so strokes wander (loose)
+            float nwob_ = tex2D(sampler_noise_lq, uv * 5.0 + rand_frame.zw).x - 0.5;
+            // two waves at different scales + noise => looser, wandering strokes
+            across_ = across_ + sin(along_ * 0.05) * 10.0 + sin(along_ * 0.013) * 16.0 + nwob_ * 16.0;
+            //float sc_ = across_ * 0.085;                            // stroke spacing
+            float sc_ = across_ * 0.120;                            // stroke spacing
+            sc_ = abs((sc_ - floor(sc_)) - 0.5) * 2.0;             // triangle line profile
+            float stroke_ = 1.0 - smoothstep(0.30, 0.5, sc_);
+            // break strokes into loose segments so most of the paper stays untouched
+            float len_ = tex2D(sampler_noise_lq, float2(along_ * 0.004, across_ * 0.02)).x;
+            float gap_ = smoothstep(0.40, 0.72, len_);            // most of each stroke drops out
+            // only the darker shadows get any graphite (strong bias to white paper)
+            float hatch_ = stroke_ * gap_ * smoothstep(0.45, 0.85, dark_) * 0.8;
+
+            // graphite on off-white paper, high contrast, faintly cool (not warm)
+            float ink_ = saturate(line_ + hatch_);
+            float tone_ = saturate(0.98 - ink_ * 1.0);
+            ret = float3(tone_, tone_, tone_) * float3(0.99, 0.99, 1.0);
+        }
+
+        // startup guard: video_frame_count is the number of frames uploaded to the
+        // video history texture so far (0 before the first frame arrives; see
+        // PresetShaderHeaderGlsl330.inc). Until real video exists, bake blank paper
+        // so the opening pages are blank cover pages instead of black (also
+        // graceful when there is no camera at all).
+        ret = lerp(float3(0.98, 0.97, 0.95), ret, saturate(video_frame_count - 1.0));
+        }   // end: else (not a blank end-page)
     }
     else
     {
@@ -360,10 +452,8 @@ shader_body
         // faint light crest along the arc so the curve reads
         pagecol = pagecol * (1.0 + (arc / 0.035) * 0.05);
 
-        // resolve to a flat monocolor at the very end of the zoom
-        float mono = smoothstep(0.75, 1.0, q4);
-        float3 flatc = tex2D(sampler_main, (focal - 0.5) * fit + 0.5).xyz;
-        pagecol = lerp(pagecol, flatc, mono);
+        // (no monocolor resolve: the ending is a flurry of blank page-turns,
+        //  baked white by the warp shader when q6 is set)
 
         col = pagecol;
     }
