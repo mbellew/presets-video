@@ -408,8 +408,8 @@ per_pixel_50=dy = dy + dy2;
 warp_1=```
 shader_body
 {
-uv  = saturate(uv);
-   uv = uv - float2(0,1)*texsize.zw*0;
+    uv  = saturate(uv);
+    uv = uv - float2(0,1)*texsize.zw*0;
 
     float2 d2 = texsize.zw*12;
     float1 dx = ( 2*GetBlur2(uv + float2(1,0)*d2) - 2*GetBlur2(uv-float2(1,0)*d2) ).y*0.5;
@@ -435,34 +435,34 @@ uv  = saturate(uv);
     ret.z *= 0.9*(ret.x + ret.y*0.64 - 1);
     ret.z += 0.02;
 
-    float age = abs(uv.x-0.5)/3.0;
+    // Age = radial distance from the person, so the video history ripples OUT from the subject:
+    // at the body it's the live frame, further out reaches further back in time. seg_cy is
+    // bottom-up (flip for this top-down uv); aspect-correct so the rings are circular on screen.
+    float2 sc = float2(seg_cx, 1.0 - seg_cy);
+    float age = length((uv - sc) * aspect.xy) / 2.0;
     float4 vid = GetVideo(uv, age);
-    float edge = saturate(vid.a - MaskSegBlur(uv));
-    float vmx = max(max(vid.r, vid.g), vid.b);
-    float vmn = min(min(vid.r, vid.g), vid.b);
-    float3 graded = (vid.rgb - vmn) / max(vmx - vmn, 1e-4);
-    ret = lerp(ret, graded, edge);
+    float3 noise = tex2D(sampler_noise_hq, fmod((uv+time)*(uv+cos(time)),1.0)).rgb;
+//    float edge = saturate(vid.a - MaskSegBlur(uv));
+//    float vmx = max(max(vid.r, vid.g), vid.b);
+//    float vmn = min(min(vid.r, vid.g), vid.b);
+//    float3 graded = (vid.rgb - vmn) / max(vmx - vmn, 1e-4);
+
+      ret = lerp(ret, noise, vid.a/3);
+//    ret = lerp(ret, vid.rgb/4.0+noise-0.25, vid.a/3);
 }
 ```
 
-// uv.x in [0,1] maps directly to age in [0,1].
-// Left edge = most recent, right edge = oldest available frame.
 comp_1=```
 shader_body
 {
     ret = tex2D(sampler_main, uv).xyz;
-    float age = abs(uv.x-0.5)/3.0;
-    float4 vid = GetVideo(uv, age);
-    // Pull the video color toward the pastel palette (family 0, knob 0.7) — soft, no posterizing.
-    //float3 graded = PaletteSnap(5.9, vid.rgb, 1.0);
-    // float3 graded = PalettePull(5.9, vid.rgb, 0.6, 0.03);
-    // Per-pixel contrast-stretch (same trick as the ob_r/g/b audio mapping): rescale each
-    // pixel so its brightest channel -> 1 and darkest -> 0. Maxes saturation, keeps hue.
-    float vmx = max(max(vid.r, vid.g), vid.b);
-    float vmn = min(min(vid.r, vid.g), vid.b);
-    float3 graded = (vid.rgb - vmn) / max(vmx - vmn, 1e-4);
-    ret = lerp(ret, graded, vid.a);
-
+//    float2 sc = float2(seg_cx, 1.0 - seg_cy);
+//    float age = length((uv - sc) * aspect.xy) / 3.0;
+//    float4 vid = GetVideo(uv, age);
+//    float vmx = max(max(vid.r, vid.g), vid.b);
+//    float vmn = min(min(vid.r, vid.g), vid.b);
+//    float3 graded = (vid.rgb - vmn) / max(vmx - vmn, 1e-4);
+//    ret = lerp(ret, graded, vid.a);
 }
 ```
 
