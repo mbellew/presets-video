@@ -54,7 +54,7 @@ per_frame_3=video_alpha_init = 0.0;
 per_frame_4=pstart = if(below(pstart, 0), time, pstart);   // capture preset start once
 per_frame_5=age = time - pstart;                            // seconds since preset start
 per_frame_6=THOLD = 12.0;      // normal flipbook
-per_frame_7=TZOOM = 2.0;       // zoom-in lead-in
+per_frame_7=TZOOM = 3.0;       // zoom-in lead-in (longer = slower zoom, ~2-3 more page-flips)
 per_frame_8=TBLANK = 1.1;      // blank end-page flurry
 per_frame_9=zend = THOLD + TZOOM;
 per_frame_10=blank = above(age, zend);                     // 1 during the blank end-pages
@@ -88,6 +88,12 @@ per_frame_27=done = above(age, zend + TBLANK + 0.2);
 per_frame_28=preset_complete = done * equal(fired, 0);
 per_frame_29=fired = if(done, 1, fired);
 
+// Pan/zoom target for the end-of-life zoom: the person-seg centroid (already mirror-corrected and
+// smoothed by the engine; eases to screen center when no confident subject). Handed to the comp
+// shader via q7/q8. seg_cy is bottom-up; the comp flips it (uv.y=0 is the top).
+per_frame_30=q7 = seg_cx;
+per_frame_31=q8 = seg_cy;
+
 warp_1=```
 shader_body
 {
@@ -106,6 +112,16 @@ shader_body
         // for a random per-preset choice (rand_preset is constant per preset).
         int filt_ = int(floor(rand_preset.x * 4.9999));
         //int filt_ = 0;
+
+        // ---- SOURCE zoom (end-of-life): magnify the incoming video toward the subject BEFORE
+        // filtering, so the filter kernels (edge steps, halftone dots, grain) keep their screen
+        // scale and the style stays consistent -- only the content zooms. suv keeps the original
+        // screen coord for those screen-space overlays; every GetVideo/MaskSeg below now reads the
+        // zoomed uv. This bakes into the page, so the zoom advances one step per page-flip.
+        float2 suv = uv;
+        float zoom_ = 1.0 + q4 * q4 * 16.0;
+        float2 fv_ = clamp(float2(q7, 1.0 - q8), float2(0.15, 0.15), float2(0.85, 0.85)); // seg_cy is bottom-up
+        uv = fv_ + (uv - fv_) / zoom_;
         if (filt_ == 0)
         {
             // --- FILTER 0 - watercolor: Kuwahara, pick the flattest quadrant ---
@@ -178,7 +194,7 @@ shader_body
             float wgt_ = 0.35 + 0.65 * seg_;   // fainter strokes in the background
 
             // paper tooth grain (static per page, since baked on the gate frame)
-            float2 nuv_ = uv * 3.0 + rand_frame.xy;
+            float2 nuv_ = suv * 3.0 + rand_frame.xy;
             float grain_ = tex2D(sampler_noise_lq, nuv_).x - 0.5;
 
             float tone_ = 0.94 * (0.55 + 0.45 * a11);              // soft mid grays
@@ -262,7 +278,7 @@ shader_body
             col_ = lerp(float3(clum_, clum_, clum_), col_, 0.15 + 0.85 * seg_);
 
             // Ben-Day halftone: bigger, stronger dots that grow in the darker tones
-            float2 gp = uv * texsize.xy;
+            float2 gp = suv * texsize.xy;
             float cell_ = 16.0;
             float2 cq = gp / cell_;
             cq = (cq - floor(cq)) - 0.5;                        // position within a cell
@@ -297,7 +313,7 @@ shader_body
             float3 L_ = float3(0.299, 0.587, 0.114);
 
             // per-page boil: offset the read by low-freq noise that changes each bake
-            float2 jn_ = tex2D(sampler_noise_lq, uv * 2.0 + rand_frame.xy).xy - 0.5;
+            float2 jn_ = tex2D(sampler_noise_lq, suv * 2.0 + rand_frame.xy).xy - 0.5;
             float2 juv = uv + jn_ * texsize.zw * 7.0;
 
             // Sobel contours on the jittered image
@@ -319,12 +335,12 @@ shader_body
             // stroke lines wave and wander (noise), so it reads as gestural
             // graphite fill rather than a mechanical hatch grid.
             float dark_ = saturate((1.0 - s11 - 0.05) * 1.25);
-            float2 hp = (uv + jn_ * texsize.zw * 4.0) * texsize.xy;   // boils a touch too
+            float2 hp = (suv + jn_ * texsize.zw * 4.0) * texsize.xy;   // boils a touch too
             float2 dir_ = float2(0.86, 0.51);                        // scribble direction (~30 deg)
             float along_  = dot(hp, dir_);
             float across_ = dot(hp, float2(-dir_.y, dir_.x));
             // wave the stroke position + add noise so strokes wander (loose)
-            float nwob_ = tex2D(sampler_noise_lq, uv * 5.0 + rand_frame.zw).x - 0.5;
+            float nwob_ = tex2D(sampler_noise_lq, suv * 5.0 + rand_frame.zw).x - 0.5;
             // two waves at different scales + noise => looser, wandering strokes
             across_ = across_ + sin(along_ * 0.05) * 10.0 + sin(along_ * 0.013) * 16.0 + nwob_ * 16.0;
             //float sc_ = across_ * 0.085;                            // stroke spacing
@@ -419,11 +435,11 @@ shader_body
     {
         float ct = cos(q3);                 // 1 = flat, 0 = edge-on / turned away
 
-        // end-of-life zoom: push the content in toward the page center. q4 goes
-        // 0 during the hold, then ramps; at full zoom the crop collapses to one
-        // color, and we lerp the last bit to a flat monocolor for a clean end.
+        // The end-of-life zoom now happens in the WARP shader (it zooms the SOURCE video toward
+        // the subject before filtering, so the filter style stays consistent). The comp just
+        // displays the baked page 1:1 here -- keep focal/zoom identity so nothing double-zooms.
         float2 focal = float2(0.5, 0.5);
-        float zoom = 1.0 + q4 * q4 * 16.0;
+        float zoom = 1.0;
 
         float3 pagecol;
         if (pg.x < ct)
