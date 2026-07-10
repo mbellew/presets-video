@@ -1,0 +1,373 @@
+// FLIPBOOK - live video stylised as an artist's flipbook on a desk.
+//
+// Every ~1/2 s a new "page" is drawn: the warp shader runs ONE of four artistic
+// filters over the incoming video (picked once per preset from rand_preset, so a
+// given run stays in one style):
+//   0 watercolor  - Kuwahara flatten + saturate + posterize; seg-darkened bg
+//   1 charcoal    - Sobel strokes + tonal shading + paper grain on warm paper
+//   2 line drawing - multi-scale Sobel contours + posterized ink wash (subject)
+//   3 comic book  - CMYK-quantised cels + Ben-Day halftone + ink; desaturated bg
+// The chosen filter is expensive, so it is baked only on the "gate" frame and the
+// painted result is held in the feedback buffer between pages.
+//
+// The comp shader composites the scene: the held page is drawn (aspect-fit, with
+// a gentle arc) into a page rectangle on a vignetted desk, with a drop shadow and
+// card-stack edges. At each turn the page foreshortens and lifts about its left
+// spine (angle q3) to reveal the next page, giving the 3D page-turn read.
+//
+// LIFETIME: normal flipbook, then a zoom into centre resolving to a flat mono-
+// colour, then per_frame sets preset_complete to hand off (flipbooks are short).
+//
+// NOTE: in the comp pixel shader uv.y = 0 is the TOP edge (y increases downward).
+[preset00]
+MILKDROP_PRESET_VERSION=201
+PSVERSION=2
+PSVERSION_WARP=2
+PSVERSION_COMP=2
+
+// Identity transform + no decay so a held (painted) frame stays pixel-exact.
+fWaveEnable=0
+fDecay=1
+zoom=1
+rot=0
+cx=0.5
+cy=0.5
+dx=0
+dy=0
+warp=0
+sx=1
+sy=1
+wave_a=0
+
+per_frame_init_1=last_t = 0;
+per_frame_init_2=pstart = -1;
+
+// Straight video copy, no library-computed alpha.
+per_frame_1=video_alpha_mode = 0;
+per_frame_2=video_alpha_value = 1.0;
+per_frame_3=video_alpha_init = 0.0;
+
+// --- flip-book timing ---
+per_frame_4=P = 0.4;      // page period (2 fps)
+per_frame_5=FW = 0.15;    // page-turn duration
+
+// New cycle when a full period has elapsed. nc is a clean one-shot (1 only on
+// the frame we reset last_t), so the new page bakes IMMEDIATELY at the turn.
+per_frame_6=nc = above(time - last_t, P);
+per_frame_7=last_t = if(nc, time, last_t);
+per_frame_8=u = time - last_t;                    // time since this page turn began
+
+per_frame_9=q1 = max(nc, below(frame, 2));        // warp: bake the new page now
+per_frame_10=q3 = min(u / FW, 1) * 1.5708;        // comp: page-turn angle 0..pi/2
+
+// --- short-flipbook lifetime: hold, then zoom into center to a monocolor, end ---
+per_frame_11=pstart = if(below(pstart, 0), time, pstart);   // capture preset start once
+per_frame_12=age = time - pstart;                           // seconds since preset start
+per_frame_13=THOLD = 12.0;                                   // normal flipbook
+per_frame_14=TZOOM = 2.0;                                   // zoom-in to monocolor
+per_frame_15=q4 = max(0, min((age - THOLD) / TZOOM, 1));    // comp: zoom progress 0..1
+// Ask projectM to switch away once the zoom has fully resolved (+ brief hold).
+per_frame_16=preset_complete = above(age, THOLD + TZOOM + 0.4);
+
+warp_1=```
+shader_body
+{
+    if (q1 > 0.5)
+    {
+        // Pick one of four artistic filters per preset. rand_preset is a random
+        // float4 constant for the preset's lifetime, so the whole flipbook stays
+        // in one style (each ~25%).
+        if (rand_preset.x < 0.25)
+        {
+        // --- FILTER 0 - watercolor: Kuwahara, pick the flattest quadrant ---
+        float2 px = texsize.zw * 3.0;   // sample step (bigger = fatter brush)
+        float minv_ = 1e9;
+        float3 best_ = float3(0, 0, 0);
+        int si_; int sj_; int i_; int j_;
+        for (si_ = -1; si_ <= 1; si_ = si_ + 2)
+        {
+            for (sj_ = -1; sj_ <= 1; sj_ = sj_ + 2)
+            {
+                float3 sum_ = float3(0, 0, 0);
+                float ls_ = 0.0;
+                float l2_ = 0.0;
+                for (i_ = 0; i_ <= 4; i_ = i_ + 1)
+                {
+                    for (j_ = 0; j_ <= 4; j_ = j_ + 1)
+                    {
+                        float2 o_ = float2(float(si_ * i_), float(sj_ * j_)) * px;
+                        float3 c_ = GetVideo(uv + o_, 0.0).rgb;
+                        float l_ = dot(c_, float3(0.299, 0.587, 0.114));
+                        sum_ = sum_ + c_;
+                        ls_  = ls_ + l_;
+                        l2_  = l2_ + l_ * l_;
+                    }
+                }
+                float n_ = 25.0;
+                float3 mean_ = sum_ / n_;
+                float var_ = l2_ / n_ - (ls_ / n_) * (ls_ / n_);
+                if (var_ < minv_) { minv_ = var_; best_ = mean_; }
+            }
+        }
+        ret = best_;
+
+        // --- push it: contrast, then heavy saturation, then posterize ---
+        ret = saturate((ret - 0.5) * 1.35 + 0.5);          // contrast punch
+        float g_ = dot(ret, float3(0.299, 0.587, 0.114));  // luminance
+        ret = saturate(lerp(float3(g_, g_, g_), ret, 2.2)); // crank saturation
+        ret = floor(ret * 5.0 + 0.5) / 5.0;                // 5 paint bands / channel
+
+        // --- pop the subject: darken + desaturate the background (seg mask) ---
+        // seg_ ~ 1 on the person, ~ 0 on the background.
+        float seg_ = MaskSeg(uv);
+        float bl_ = dot(ret, float3(0.299, 0.587, 0.114));
+        float3 bg_ = lerp(float3(bl_, bl_, bl_), ret, 0.25) * 0.4; // grayer + darker
+        ret = lerp(bg_, ret, seg_);
+        }
+        else if (rand_preset.x < 0.5)
+        {
+            // --- FILTER 1 - charcoal / pencil sketch ---
+            // Sobel edges on video luminance -> dark strokes on warm paper, with
+            // shading in the dark regions and a static paper-tooth grain.
+            float2 e_ = texsize.zw * 2.0;
+            float3 L_ = float3(0.299, 0.587, 0.114);
+            float a00 = dot(GetVideo(uv + float2(-e_.x, -e_.y), 0.0).rgb, L_);
+            float a10 = dot(GetVideo(uv + float2( 0.0,  -e_.y), 0.0).rgb, L_);
+            float a20 = dot(GetVideo(uv + float2( e_.x, -e_.y), 0.0).rgb, L_);
+            float a01 = dot(GetVideo(uv + float2(-e_.x,  0.0),  0.0).rgb, L_);
+            float a11 = dot(GetVideo(uv,                        0.0).rgb, L_);
+            float a21 = dot(GetVideo(uv + float2( e_.x,  0.0),  0.0).rgb, L_);
+            float a02 = dot(GetVideo(uv + float2(-e_.x,  e_.y), 0.0).rgb, L_);
+            float a12 = dot(GetVideo(uv + float2( 0.0,   e_.y), 0.0).rgb, L_);
+            float a22 = dot(GetVideo(uv + float2( e_.x,  e_.y), 0.0).rgb, L_);
+            float gx_ = (a20 + 2.0 * a21 + a22) - (a00 + 2.0 * a01 + a02);
+            float gy_ = (a02 + 2.0 * a12 + a22) - (a00 + 2.0 * a10 + a20);
+            float edge_ = sqrt(gx_ * gx_ + gy_ * gy_);
+
+            float seg_ = MaskSeg(uv);
+            float wgt_ = 0.35 + 0.65 * seg_;   // fainter strokes in the background
+
+            // paper tooth grain (static per page, since baked on the gate frame)
+            float2 nuv_ = uv * 3.0 + rand_frame.xy;
+            float grain_ = tex2D(sampler_noise_lq, nuv_).x - 0.5;
+
+            float tone_ = 0.94 * (0.55 + 0.45 * a11);              // soft mid grays
+            tone_ = tone_ - saturate(edge_ * 3.5) * 0.85 * wgt_;   // dark edge strokes
+            tone_ = tone_ - (1.0 - a11) * 0.35 * wgt_;             // shade dark regions
+            tone_ = tone_ + grain_ * 0.08;                         // paper tooth
+            tone_ = saturate(tone_);
+            ret = tone_ * float3(1.0, 0.98, 0.95);                 // warm paper tint
+        }
+        else if (rand_preset.x < 0.75)
+        {
+            // --- FILTER 2 - line drawing / pen-and-ink ---
+            // Denser multi-scale Sobel contours PLUS diagonal cross-hatching that
+            // builds up in the shadows, so the figure reads with form instead of a
+            // sparse outline.
+            float3 L_ = float3(0.299, 0.587, 0.114);
+            float lum_ = dot(GetVideo(uv, 0.0).rgb, L_);
+
+            // -- contours: combine a fine and a coarse Sobel for richer linework --
+            float2 e1 = texsize.zw * 1.5;
+            float b00 = dot(GetVideo(uv + float2(-e1.x, -e1.y), 0.0).rgb, L_);
+            float b10 = dot(GetVideo(uv + float2( 0.0,  -e1.y), 0.0).rgb, L_);
+            float b20 = dot(GetVideo(uv + float2( e1.x, -e1.y), 0.0).rgb, L_);
+            float b01 = dot(GetVideo(uv + float2(-e1.x,  0.0),  0.0).rgb, L_);
+            float b21 = dot(GetVideo(uv + float2( e1.x,  0.0),  0.0).rgb, L_);
+            float b02 = dot(GetVideo(uv + float2(-e1.x,  e1.y), 0.0).rgb, L_);
+            float b12 = dot(GetVideo(uv + float2( 0.0,   e1.y), 0.0).rgb, L_);
+            float b22 = dot(GetVideo(uv + float2( e1.x,  e1.y), 0.0).rgb, L_);
+            float g1x = (b20 + 2.0 * b21 + b22) - (b00 + 2.0 * b01 + b02);
+            float g1y = (b02 + 2.0 * b12 + b22) - (b00 + 2.0 * b10 + b20);
+            float edge1 = sqrt(g1x * g1x + g1y * g1y);
+
+            float2 e2 = texsize.zw * 3.5;
+            float c00 = dot(GetVideo(uv + float2(-e2.x, -e2.y), 0.0).rgb, L_);
+            float c10 = dot(GetVideo(uv + float2( 0.0,  -e2.y), 0.0).rgb, L_);
+            float c20 = dot(GetVideo(uv + float2( e2.x, -e2.y), 0.0).rgb, L_);
+            float c01 = dot(GetVideo(uv + float2(-e2.x,  0.0),  0.0).rgb, L_);
+            float c21 = dot(GetVideo(uv + float2( e2.x,  0.0),  0.0).rgb, L_);
+            float c02 = dot(GetVideo(uv + float2(-e2.x,  e2.y), 0.0).rgb, L_);
+            float c12 = dot(GetVideo(uv + float2( 0.0,   e2.y), 0.0).rgb, L_);
+            float c22 = dot(GetVideo(uv + float2( e2.x,  e2.y), 0.0).rgb, L_);
+            float g2x = (c20 + 2.0 * c21 + c22) - (c00 + 2.0 * c01 + c02);
+            float g2y = (c02 + 2.0 * c12 + c22) - (c00 + 2.0 * c10 + c20);
+            float edge2 = sqrt(g2x * g2x + g2y * g2y);
+
+            float edge_ = max(edge1, edge2 * 0.4);          // favour fine scale = thinner lines
+            float line_ = smoothstep(0.11, 0.24, edge_);    // higher threshold = fewer, thinner lines
+
+            float seg_ = MaskSeg(uv);
+
+            // -- shading: light posterized ink wash - FOREGROUND (subject) ONLY --
+            float dark_ = saturate(1.0 - lum_);
+            float wash_ = floor(dark_ * 3.0 + 0.5) / 3.0;      // ~4 flat tone bands
+            float hatch_ = wash_ * 0.45 * seg_;                // wash only on the subject
+
+            float wgt_ = 0.45 + 0.55 * seg_;                 // background lines stay lighter
+            float ink_ = saturate(line_ + hatch_) * wgt_;
+            float tone_ = saturate(0.97 - ink_ * 0.9);       // black ink on clean paper
+            ret = float3(tone_, tone_, tone_);
+        }
+        else
+        {
+            // --- FILTER 3 - comic book: flat cels + Ben-Day halftone + ink ---
+            float3 L_ = float3(0.299, 0.587, 0.114);
+            float3 col_ = GetVideo(uv, 0.0).rgb;
+            float lum_ = dot(col_, L_);
+
+            // punch saturation, then quantize through a limited 4-color (CMYK)
+            // process so colors snap to the classic comic ink set.
+            col_ = saturate(lerp(float3(lum_, lum_, lum_), col_, 1.5));
+            float3 cmy_ = 1.0 - col_;
+            float k_ = min(cmy_.r, min(cmy_.g, cmy_.b));
+            cmy_ = (cmy_ - k_) / max(1.0 - k_, 0.001);          // pull out the black
+            cmy_ = floor(cmy_ * 2.0 + 0.5) / 2.0;               // C/M/Y screens: 0, 0.5, 1
+            float kq_ = floor(k_ * 3.0 + 0.5) / 3.0;            // black screen in quarters
+            col_ = (1.0 - cmy_) * (1.0 - kq_);
+
+            // desaturate the background; subject keeps full color
+            float seg_ = MaskSeg(uv);
+            float clum_ = dot(col_, L_);
+            col_ = lerp(float3(clum_, clum_, clum_), col_, 0.15 + 0.85 * seg_);
+
+            // Ben-Day halftone: bigger, stronger dots that grow in the darker tones
+            float2 gp = uv * texsize.xy;
+            float cell_ = 16.0;
+            float2 cq = gp / cell_;
+            cq = (cq - floor(cq)) - 0.5;                        // position within a cell
+            float dd_ = length(cq) * 2.0;                       // 0 center .. ~1.4 corner
+            float rad_ = sqrt(saturate(1.0 - lum_)) * 1.15;     // darker -> bigger dot
+            float dot_ = smoothstep(rad_, rad_ - 0.25, dd_);    // 1 inside the dot (sharper)
+            col_ = col_ * (1.0 - dot_ * 0.45);
+
+            // bold ink outlines (Sobel on luminance)
+            float2 e_ = texsize.zw * 1.8;
+            float k00 = dot(GetVideo(uv + float2(-e_.x, -e_.y), 0.0).rgb, L_);
+            float k10 = dot(GetVideo(uv + float2( 0.0,  -e_.y), 0.0).rgb, L_);
+            float k20 = dot(GetVideo(uv + float2( e_.x, -e_.y), 0.0).rgb, L_);
+            float k01 = dot(GetVideo(uv + float2(-e_.x,  0.0),  0.0).rgb, L_);
+            float k21 = dot(GetVideo(uv + float2( e_.x,  0.0),  0.0).rgb, L_);
+            float k02 = dot(GetVideo(uv + float2(-e_.x,  e_.y), 0.0).rgb, L_);
+            float k12 = dot(GetVideo(uv + float2( 0.0,   e_.y), 0.0).rgb, L_);
+            float k22 = dot(GetVideo(uv + float2( e_.x,  e_.y), 0.0).rgb, L_);
+            float kx_ = (k20 + 2.0 * k21 + k22) - (k00 + 2.0 * k01 + k02);
+            float ky_ = (k02 + 2.0 * k12 + k22) - (k00 + 2.0 * k10 + k20);
+            float ink_ = smoothstep(0.10, 0.30, sqrt(kx_ * kx_ + ky_ * ky_));
+            col_ = col_ * (1.0 - ink_);
+
+            ret = saturate(col_);
+        }
+    }
+    else
+    {
+        ret = tex2D(sampler_main, uv_orig).xyz;  // hold the painted frame
+    }
+}
+```
+
+comp_1=```
+shader_body
+{
+    // ---- scene layout (procedural book on a desk) ----
+    // The painted frame (sampler_main) is drawn inside PAGE rect [P0..P1].
+    // A page turns about the LEFT (spine) edge: as the turn angle q3 grows the
+    // page foreshortens (covers pg.x in [0, cos(q3)]) and lifts, revealing the
+    // next page underneath (the same freshly-baked image). Real page edges +
+    // shading + a cast shadow give the 3D page-turn read.
+    float2 P0 = float2(0.08, 0.06);
+    float2 P1 = float2(0.92, 0.94);
+    float3 desk = float3(0.06, 0.05, 0.045);
+
+    // desk with a soft vignette
+    float2 cc = uv - 0.5;
+    float3 col = desk * (1.0 - dot(cc, cc) * 0.7);
+
+    // gentle page arc: bow the whole page up in the middle so it isn't dead
+    // flat. arc depends only on horizontal position, so it curves the top and
+    // bottom edges (and the content) together by a small amount.
+    float px  = (uv.x - P0.x) / (P1.x - P0.x);
+    float arc = sin(clamp(px, 0.0, 1.0) * 3.14159265) * 0.035;
+    float2 uva = float2(uv.x, uv.y + arc);   // + bows the page up in the middle
+
+    // pg = 0..1 across the page; outside the rect it goes out of [0,1]
+    float2 pg = (uva - P0) / (P1 - P0);
+    float inpage = step(0.0, pg.x) * step(pg.x, 1.0)
+                 * step(0.0, pg.y) * step(pg.y, 1.0);
+
+    // soft drop shadow of the book onto the desk (follows the arced silhouette)
+    float2 dout = max(max(P0 - uva, uva - P1), float2(0.0, 0.0));
+    float shad = exp(-length(dout) * 45.0) * 0.75;
+    col = lerp(col, desk * 0.15, shad * (1.0 - inpage));
+
+    // card-stack edges: a few lines just beyond the right & bottom edges (they
+    // follow the arced page contour) to imply a stack of pages under the top one.
+    // NOTE: in this space pg.y = 0 is the TOP edge and pg.y = 1 is the BOTTOM,
+    // so the bottom stack line sits at pg.y = 1 + o.
+    float st = 0.0;
+    int kk;
+    for (kk = 1; kk <= 4; kk = kk + 1)
+    {
+        float o = float(kk) * 0.006;
+        float rl = (1.0 - smoothstep(0.0, 0.0018, abs(pg.x - (1.0 + o)))) * step(0.0, pg.y) * step(pg.y, 1.0 + o);
+        float bl = (1.0 - smoothstep(0.0, 0.0018, abs(pg.y - (1.0 + o)))) * step(0.0, pg.x) * step(pg.x, 1.0 + o);
+        st = max(st, max(rl, bl) * (1.0 - float(kk) * 0.15));   // fainter deeper in the stack
+    }
+    col = lerp(col, float3(0.55, 0.52, 0.47), st * (1.0 - inpage));
+
+    // aspect-fit ("cover"): sample a centered crop of the painting so its shape
+    // isn't distorted to the page rectangle. Map page-local m -> buffer uv via
+    //   buv = (m - 0.5) * fit + 0.5
+    float bufAsp  = texsize.x / texsize.y;
+    float pageAsp = ((P1.x - P0.x) * texsize.x) / ((P1.y - P0.y) * texsize.y);
+    float2 fit = float2(1.0, 1.0);
+    if (pageAsp > bufAsp) { fit.y = bufAsp / pageAsp; } else { fit.x = pageAsp / bufAsp; }
+
+    if (inpage > 0.5)
+    {
+        float ct = cos(q3);                 // 1 = flat, 0 = edge-on / turned away
+
+        // end-of-life zoom: push the content in toward the page center. q4 goes
+        // 0 during the hold, then ramps; at full zoom the crop collapses to one
+        // color, and we lerp the last bit to a flat monocolor for a clean end.
+        float2 focal = float2(0.5, 0.5);
+        float zoom = 1.0 + q4 * q4 * 16.0;
+
+        float3 pagecol;
+        if (pg.x < ct)
+        {
+            // --- on the turning page (foreshortened toward the spine) ---
+            float u_ = pg.x / max(ct, 0.001);          // material coord 0..1
+            float2 m1 = focal + (float2(u_, pg.y) - focal) / zoom;
+            pagecol = tex2D(sampler_main, (m1 - 0.5) * fit + 0.5).xyz;
+            float shade = 0.55 + 0.45 * ct;            // flatter -> brighter
+            float hi = smoothstep(0.8, 1.0, u_) * (1.0 - ct) * 0.6; // edge catchlight
+            pagecol = pagecol * shade + hi;
+        }
+        else
+        {
+            // --- next page revealed underneath (un-foreshortened) ---
+            float2 m1 = focal + (pg - focal) / zoom;
+            pagecol = tex2D(sampler_main, (m1 - 0.5) * fit + 0.5).xyz;
+            float cs = saturate(1.0 - (pg.x - ct) / 0.06) * 0.55; // cast shadow at fold
+            pagecol = pagecol * (1.0 - cs);
+        }
+
+        // thin page-stack / spine shading along the left binding edge
+        float spine = smoothstep(0.03, 0.0, pg.x) * 0.5;
+        pagecol = pagecol * (1.0 - spine);
+
+        // faint light crest along the arc so the curve reads
+        pagecol = pagecol * (1.0 + (arc / 0.035) * 0.05);
+
+        // resolve to a flat monocolor at the very end of the zoom
+        float mono = smoothstep(0.75, 1.0, q4);
+        float3 flatc = tex2D(sampler_main, (focal - 0.5) * fit + 0.5).xyz;
+        pagecol = lerp(pagecol, flatc, mono);
+
+        col = pagecol;
+    }
+
+    ret = col;
+}
+```
