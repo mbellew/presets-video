@@ -73,8 +73,15 @@ shader_body
     // different dance entirely; ~1.5 beats keeps him visibly chasing the same moves -- and it
     // lands him on the OFF-beat, so he's always arriving just as everyone else has moved on.
     // Randomised a little per run (1.25-1.75 beats) so he's differently bad each time.
-    float lag_   = 1.25 + 0.5 * frac(rand_preset.z * 11.7);
-    float rogue_ = saturate((lag_ * beat_) / buf_);
+    float base_  = 1.25 + 0.5 * frac(rand_preset.z * 11.7);
+
+    // ...and he DRIFTS. A fixed lag is predictable -- you learn it and stop watching him. A sine
+    // (~7s period, phase randomised per run) walks him between roughly 0.85 and 2.0 beats behind,
+    // so he keeps almost catching up and then falling away again.
+    // The period has to be well SHORTER than a preset's time on screen (~25s), or he only swings
+    // once and the drift never reads at all -- at ~7s you see him gain and lose ground repeatedly.
+    float lag_   = base_ + 0.55 * sin(time * 0.9 + rand_preset.w * 6.2831853);
+    float rogue_ = saturate((max(lag_, 0.25) * beat_) / buf_);
 
     // qi can run outside 0..3 where the wobbling seams (q3,q4) push the tiles around, so fold
     // it back into 0..3 before comparing against the chosen rogue.
