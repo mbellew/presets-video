@@ -17,6 +17,9 @@ Both of these silently produced wrong verdicts during this review:
    shade and frame the image, so the two can look like different presets. Capture with
    `PROJECTM_SCREENSHOT_SURFACE=comp` (what the viewer sees) — `main` is the warp output, useful
    when debugging the drawing itself, misleading when judging the look.
+3. **Stills systematically undersell motion.** Anything whose appeal is temporal — slit-scan,
+   feedback trails, page-flips — looks worse frozen than it is. `splitscan` reads as an illegible
+   smear in a still and is superb in motion. Watch it live before rating it down.
 
 ## Scale
 
@@ -53,6 +56,7 @@ declaration in the warp shader).
 | falling — Hexcollie, Spooky nz+ psychos on the internet | — | In the top-level `favorites.txt`. |
 | ghost — Geiss, Skin Dots 10b (video motion reaction) | — | Shimmering moiré ripple field, figure dissolving through it. Only 5 lines from `ghost color zoom`. **Needs audio to judge** — it looks dead in silence. |
 | ghost color zoom — Geiss, Skin Dots 10b | — | As above but louder: bigger colour blooms, stronger zoom. |
+| splitscan — Flexi + geiss, the deep diver's manifesto | ★★★★★ | Slit-scan / time-smear: vertical strips sampled from different points in the video history, so motion drags into flowing ribbons; hot reds/oranges against acid green, with hard vertical banding snapping in on transients. **The figure is barely legible** — a person-shaped disturbance rather than a subject — and in stills that looks like a flaw. It isn't: in motion this is one of the best things in the set. Cleaned up: 222 dead lines removed (489 → 267; all 8 wave/shape blocks disabled, plus their code bodies). |
 | recursive quad — time-offset | — | |
 | splitscan — Flexi + geiss, the deep diver's manifesto | — | |
 | suksma — biotoxins on strings, walk on it | — | In the top-level `favorites.txt`. |
