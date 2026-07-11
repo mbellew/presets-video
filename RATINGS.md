@@ -5,6 +5,19 @@ look produced by one `.milk` file (e.g. `flipbook.milk` picks one of five artist
 filters per run via `rand_preset`); each is rated on its own, since they succeed or
 fail independently.
 
+## How to review (two ways to fool yourself)
+
+Both of these silently produced wrong verdicts during this review:
+
+1. **Review with music playing, and check the mic actually opened.** A preset name that matches no
+   device does not error — it falls back to the system default, which here is silence. Look for
+   `Selected audio device '...'` in the log. Deaf, audio-reactive presets look dead or static, and
+   several were nearly deleted on that basis.
+2. **Look at the COMPOSITE, not the pre-composite drawing.** The composite shader can crop, curve,
+   shade and frame the image, so the two can look like different presets. Capture with
+   `PROJECTM_SCREENSHOT_SURFACE=comp` (what the viewer sees) — `main` is the warp output, useful
+   when debugging the drawing itself, misleading when judging the look.
+
 ## Scale
 
 | Stars | Meaning |
@@ -35,13 +48,11 @@ declaration in the warp shader).
 
 | Preset | Rating | Notes |
 |---|---|---|
-| blob-shadow — various artists | — | |
+| rorschach — suksma, broadcloak flacc roam3 nz+ | ★★★★★ | The best of the set. Mirrored figure emerging from an ink blot; the dark field is what makes the symmetry read as a Rorschach rather than a kaleidoscope. Its `video_` shader (motion-gated seg matte) only started running once the palette-sampler bug was fixed — it is richer now than in any earlier capture. Cleaned up: 76 dead lines removed (all four disabled `wavecode_*` blocks + disabled `shapecode_3`; shapes 0–2 are live and draw the figure). Absorbed the identical `rorschach x 3` (same code, plus a commented-out film-negative experiment). In the top-level `favorites.txt`. |
+| blob-shadow — various artists | ★★★ | Glowing green figure against a blue blob field. Reads clearly in the composite (it looked far weaker in the pre-composite view, which is what the broken screenshot was showing). |
 | falling — Hexcollie, Spooky nz+ psychos on the internet | — | In the top-level `favorites.txt`. |
-| ghost — Geiss, Skin Dots 10b (video motion reaction) | — | |
-| ghost color zoom — Geiss, Skin Dots 10b | — | |
-| ink-shadow — various artists | — | |
+| ghost — Geiss, Skin Dots 10b (video motion reaction) | — | Shimmering moiré ripple field, figure dissolving through it. Only 5 lines from `ghost color zoom`. **Needs audio to judge** — it looks dead in silence. |
+| ghost color zoom — Geiss, Skin Dots 10b | — | As above but louder: bigger colour blooms, stronger zoom. |
 | recursive quad — time-offset | — | |
-| rorschach — suksma, broadcloak flacc roam3 nz+ | — | In the top-level `favorites.txt`. |
-| rorschach x 3 — suksma, broadcloak flacc roam3 nz+ | — | |
 | splitscan — Flexi + geiss, the deep diver's manifesto | — | |
 | suksma — biotoxins on strings, walk on it | — | In the top-level `favorites.txt`. |

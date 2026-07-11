@@ -73,58 +73,6 @@ b1x=1.000
 b2x=1.000
 b3x=1.000
 b1ed=0.250
-wavecode_0_enabled=0
-wavecode_0_samples=512
-wavecode_0_sep=0
-wavecode_0_bSpectrum=0
-wavecode_0_bUseDots=0
-wavecode_0_bDrawThick=0
-wavecode_0_bAdditive=0
-wavecode_0_scaling=1.00000
-wavecode_0_smoothing=0.50000
-wavecode_0_r=1.000
-wavecode_0_g=1.000
-wavecode_0_b=1.000
-wavecode_0_a=1.000
-wavecode_1_enabled=0
-wavecode_1_samples=512
-wavecode_1_sep=0
-wavecode_1_bSpectrum=0
-wavecode_1_bUseDots=0
-wavecode_1_bDrawThick=0
-wavecode_1_bAdditive=0
-wavecode_1_scaling=1.00000
-wavecode_1_smoothing=0.50000
-wavecode_1_r=1.000
-wavecode_1_g=1.000
-wavecode_1_b=1.000
-wavecode_1_a=1.000
-wavecode_2_enabled=0
-wavecode_2_samples=512
-wavecode_2_sep=0
-wavecode_2_bSpectrum=0
-wavecode_2_bUseDots=0
-wavecode_2_bDrawThick=0
-wavecode_2_bAdditive=0
-wavecode_2_scaling=1.00000
-wavecode_2_smoothing=0.50000
-wavecode_2_r=1.000
-wavecode_2_g=1.000
-wavecode_2_b=1.000
-wavecode_2_a=1.000
-wavecode_3_enabled=0
-wavecode_3_samples=512
-wavecode_3_sep=0
-wavecode_3_bSpectrum=0
-wavecode_3_bUseDots=0
-wavecode_3_bDrawThick=0
-wavecode_3_bAdditive=0
-wavecode_3_scaling=1.00000
-wavecode_3_smoothing=0.50000
-wavecode_3_r=1.000
-wavecode_3_g=1.000
-wavecode_3_b=1.000
-wavecode_3_a=1.000
 shapecode_0_enabled=1
 shapecode_0_sides=32
 shapecode_0_additive=1
@@ -250,30 +198,6 @@ shape_2_per_frame15=border_r=int(rand(q3))*.1+instance-instance;
 shape_2_per_frame16=border_g=int(rand(q3))*.1+instance-instance;
 shape_2_per_frame17=border_b=int(rand(q3))*.1+instance-instance;
 shape_2_per_frame18=
-shapecode_3_enabled=0
-shapecode_3_sides=4
-shapecode_3_additive=0
-shapecode_3_thickOutline=0
-shapecode_3_textured=0
-shapecode_3_num_inst=1
-shapecode_3_x=0.500
-shapecode_3_y=0.500
-shapecode_3_rad=0.10000
-shapecode_3_ang=0.00000
-shapecode_3_tex_ang=0.00000
-shapecode_3_tex_zoom=1.00000
-shapecode_3_r=1.000
-shapecode_3_g=0.000
-shapecode_3_b=0.000
-shapecode_3_a=1.000
-shapecode_3_r2=0.000
-shapecode_3_g2=1.000
-shapecode_3_b2=0.000
-shapecode_3_a2=0.000
-shapecode_3_border_r=1.000
-shapecode_3_border_g=1.000
-shapecode_3_border_b=1.000
-shapecode_3_border_a=0.100
 per_frame_1=//martin no religion / my omniversal absence for changing the background light
 per_frame_2=vb = vb*0.95 + (1-vb)*pow(bass_att,2)*0.02;
 per_frame_3=vvb = vvb*0.95 + (1-vvb)*vb*0.01;
@@ -415,6 +339,7 @@ shader_body
 warp_1=```
 shader_body
 {
+
     float3 txr = float3(uv,q1*0.1);
     float2  uv2 =  uv;
     uv2 = uv + texsize.zx*(q3,q3);
@@ -430,20 +355,19 @@ shader_body
 
     ret = tex2D( sampler_main, mul(((uv-0.5)*(0.97 + rad*0.02)),rot) + 0.5  
           + GetBlur1((uv - 0.5)*0.9 + 0.5)*(uv.y*0.1)  - 0.01).xyz;    
-    float4 noise9 = tex3D(sampler_noisevol_hq, 
+float4 noise9 = tex3D(sampler_noisevol_hq, 
                       ((uv.xyy*q27
                        )*texsize.xyy*texsize_noisevol_hq.zww
                       ).xyz*
                       float3(1,1,0)*0.05 + 
                       time*float3(0,0,1)*q29
                      );
-    if(ret.x> q21*q13         && ret.x<= q24*q11        )ret.y += (noise9).x*.5; 
-    if(ret.y> q22*q11         && ret.y<= q25*q12        )ret.z += (noise9).y*.5; 
-    if(ret.z> q23*q12         && ret.z<= q26*q13        )ret.x += (noise9).z*.5; 
+if(ret.x> q21*q13         && ret.x<= q24*q11        )ret.y += (noise9).x*.5; 
+if(ret.y> q22*q11         && ret.y<= q25*q12        )ret.z += (noise9).y*.5; 
+if(ret.z> q23*q12         && ret.z<= q26*q13        )ret.x += (noise9).z*.5; 
     ret = ret-0.001;// - 0.08; //or try: ret -= 0.004;
 }
 ```
-
 comp_1=```
 shader_body
 {
@@ -483,12 +407,28 @@ shader_body
     float age = (60/max(beat_bpm,60)) / max(video_buffer_seconds,1);
 
     if (GetVideo(vuv,2*age).a > 0.1) 
-        ret = saturate((1.0 - ret) * lerp(1.0, float3(1.0, 0.62, 0.40), 0.6));
+        ret = saturate((1.0 - ret) *lerp(1.0, float3(1.0, 0.62, 0.40), 0.6));
 
     if (GetVideo(vuv,age).a > 0.1) 
-        ret = saturate((1.0 - ret) * lerp(1.0, float3(1.0, 0.62, 0.40), 0.4));
+        ret = saturate((1.0 - ret) *lerp(1.0, float3(1.0, 0.62, 0.40), 0.4));
 
-    if (GetVideo(vuv,0.0).a > 0.1)
-        ret = saturate((1.0 - ret) * lerp(1.0, float3(1.0, 0.62, 0.40), 0.2));
+    if (GetVideo(vuv,0.0).a > 0.1) 
+        ret = saturate((1.0 - ret) *lerp(1.0, float3(1.0, 0.62, 0.40), 0.2));
+
+    // float age = (60/max(beat_bpm,60)) / max(video_buffer_seconds,1);
+    // float2 vuv = float2(0.5 + abs(uv.x - 0.5), uv.y); 
+    // float vmotion = MaskMotion(vuv) * MaskSeg(vuv);   // split mirror: right half reflected onto left
+    // float vthreshold = 0.1;
+    // if (vmotion > vthreshold) 
+    // {
+    //     // The clean complement is what actually carries the underlying colors,
+    //     // so keep most of it and apply only a gentle orange C-41 film bias on top.
+    //     // A full orange-mask multiply (what real negatives have) flattens everything
+    //     // toward one tint, so we lerp toward it instead of multiplying.
+    //     float3 neg = 1.0 - ret;
+    //     float filminess = 0.35;   // 0 = pure inverted color, 1 = full orange cast
+    //     neg = lerp(neg, neg * float3(1.0, 0.62, 0.40), filminess);
+    //     ret = saturate(neg);
+    // }
 }
 ```
