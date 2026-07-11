@@ -1,12 +1,18 @@
 // FLIPBOOK - live video stylised as an artist's flipbook on a desk.
 //
-// Every ~1/2 s a new "page" is drawn: the warp shader runs ONE of four artistic
+// Every ~1/2 s a new "page" is drawn: the warp shader runs ONE of six artistic
 // filters over the incoming video (picked once per preset from rand_preset, so a
 // given run stays in one style):
-//   0 watercolor  - Kuwahara flatten + saturate + posterize; seg-whitened bg
+//   0 watercolor  - Kuwahara flatten + saturate + posterize; seg-whitened bg; fine
+//                   ink lines on the paint-band boundaries + the subject silhouette
 //   1 charcoal    - Sobel strokes + tonal shading + paper grain on warm paper
 //   2 line drawing - multi-scale Sobel contours + posterized ink wash (subject)
 //   3 comic book  - CMYK-quantised cels + Ben-Day halftone + ink; desaturated bg
+//   4 take-on-me  - pencil rotoscope: contours + loose scribble shading, boils/page
+//   5 harold      - two inks, after "Harold and the Purple Crayon": the WORLD is drawn
+//                   in purple marker (sparse, large-feature lines that boil per page,
+//                   on bare paper), the SUBJECT in black line over flat posterized
+//                   colour cels -- Harold himself is black-line in the book
 // The chosen filter is expensive, so it is baked only on the "gate" frame and the
 // painted result is held in the feedback buffer between pages.
 //
@@ -49,6 +55,38 @@ per_frame_1=video_alpha_mode = 0;
 per_frame_2=video_alpha_value = 1.0;
 per_frame_3=video_alpha_init = 0.0;
 
+// --- PRE-PASS: blurred luminance, computed ONCE per pixel (warp_pre_) ---
+// The filters need a BLURRED luminance -- that is what makes edge detection pick out large
+// structure instead of clutter. Computed inline in the warp, every gradient sample re-runs the
+// blur (~5 fetches each, ~10 samples per pixel), and neighbouring pixels redundantly recompute
+// the same values: ~200 fetches per pixel.
+//
+// warp_pre_ runs once per pixel, before the warp, and its ret.a is written into the main
+// texture's ALPHA (rgb untouched). The warp then reads it back at any coordinate with a single
+// tap, so a gradient costs 4 fetches instead of ~20.
+//
+// (The video history's alpha was the other candidate, but the person-segmentation pipeline owns
+// that channel -- it is the seg matte -- so this needs its own scratch channel.)
+warp_pre_1=```
+shader_body
+{
+    float3 L = float3(0.299, 0.587, 0.114);
+    float2 r = texsize.zw * 9.0;    // blur radius: the feature scale for the edge detector
+
+    float s = dot(GetVideo(uv, 0.0).rgb, L)
+            + dot(GetVideo(uv + float2( r.x,  r.y), 0.0).rgb, L)
+            + dot(GetVideo(uv + float2(-r.x,  r.y), 0.0).rgb, L)
+            + dot(GetVideo(uv + float2( r.x, -r.y), 0.0).rgb, L)
+            + dot(GetVideo(uv + float2(-r.x, -r.y), 0.0).rgb, L)
+            + dot(GetVideo(uv + float2( r.x * 1.6, 0.0), 0.0).rgb, L)
+            + dot(GetVideo(uv + float2(-r.x * 1.6, 0.0), 0.0).rgb, L)
+            + dot(GetVideo(uv + float2( 0.0,  r.y * 1.6), 0.0).rgb, L)
+            + dot(GetVideo(uv + float2( 0.0, -r.y * 1.6), 0.0).rgb, L);
+
+    ret.a = s / 9.0;    // -> main texture alpha, read back as PreLum() in the warp
+}
+```
+
 // --- lifetime timeline (computed first: it drives the flip cadence below) ---
 // hold (normal flipbook) -> zoom in -> a flurry of blank end-pages -> end.
 per_frame_4=pstart = if(below(pstart, 0), time, pstart);   // capture preset start once
@@ -88,13 +126,55 @@ per_frame_27=done = above(age, zend + TBLANK + 0.2);
 per_frame_28=preset_complete = done * equal(fired, 0);
 per_frame_29=fired = if(done, 1, fired);
 
-// Pan/zoom target for the end-of-life zoom: the person-seg centroid (already mirror-corrected and
-// smoothed by the engine; eases to screen center when no confident subject). Handed to the comp
-// shader via q7/q8. seg_cy is bottom-up; the comp flips it (uv.y=0 is the top).
-per_frame_30=q7 = seg_cx;
-per_frame_31=q8 = seg_cy;
-
 warp_1=```
+// Shared helpers. NOTE: a helper may use GetVideo/MaskSeg/texsize (they expand to
+// uniforms/samplers, which are global), but NOT uv/rad/ang -- those are macros onto
+// the shader entry point's parameters, so pass them in.
+
+// Pre-blurred luminance at p: ONE tap. The blur was computed once per pixel by the warp_pre_
+// pass at the top of this file, which stashed it in the main texture's alpha. Doing it here
+// instead would mean every gradient sample re-runs a 5-tap blur its neighbours already ran --
+// ~200 fetches per pixel rather than ~40.
+float PreLum(float2 p)
+{
+    return tex2D(sampler_main, p).a;
+}
+
+// Gradient of the pre-blurred luminance: central differences, 4 taps. xy = gradient, z = mag.
+// The gradient points ACROSS an edge, so a line's own direction (its tangent) is the
+// perpendicular, float2(-g.y, g.x) -- which is what lets us smooth a stroke ALONG its length
+// without blurring across its width.
+float3 BlurGrad(float2 p, float2 e)
+{
+    float xp = PreLum(p + float2(e.x, 0.0));
+    float xm = PreLum(p - float2(e.x, 0.0));
+    float yp = PreLum(p + float2(0.0, e.y));
+    float ym = PreLum(p - float2(0.0, e.y));
+    // x4 keeps the magnitude on the same scale as a 3x3 Sobel (weights 1+2+1 per side), so the
+    // thresholds measured against that scale stay valid.
+    float gx = (xp - xm) * 4.0;
+    float gy = (yp - ym) * 4.0;
+    return float3(gx, gy, sqrt(gx * gx + gy * gy));
+}
+
+// Quantised paint colour at p, used by filter 0 to find its own colour boundaries.
+// Cheap 5-tap flatten (stands in for the Kuwahara mean) pushed through the SAME
+// contrast -> saturate -> posterize as the watercolor body, so when this value
+// changes between two neighbouring pixels, that IS a paint-band edge.
+float3 PaintQuant(float2 p, float2 step)
+{
+    float3 c = GetVideo(p, 0.0).rgb
+             + GetVideo(p + float2( step.x,  step.y), 0.0).rgb
+             + GetVideo(p + float2(-step.x,  step.y), 0.0).rgb
+             + GetVideo(p + float2( step.x, -step.y), 0.0).rgb
+             + GetVideo(p + float2(-step.x, -step.y), 0.0).rgb;
+    c = c / 5.0;
+    c = saturate((c - 0.5) * 1.35 + 0.5);
+    float g = dot(c, float3(0.299, 0.587, 0.114));
+    c = saturate(lerp(float3(g, g, g), c, 2.2));
+    return floor(c * 5.0 + 0.5) / 5.0;
+}
+
 shader_body
 {
     if (q1 > 0.5)
@@ -106,21 +186,24 @@ shader_body
         }
         else
         {
-        // Pick one of five artistic filters per preset. filt_ is a 0..4 enum:
-        //   0 watercolor   1 charcoal   2 line   3 comic   4 take-on-me
-        // Set it to a literal to hardcode a filter, or int(rand_preset.x * 5.0)
-        // for a random per-preset choice (rand_preset is constant per preset).
-        int filt_ = int(floor(rand_preset.x * 4.9999));
-        //int filt_ = 0;
+        // Pick one of six artistic filters per preset. filt_ is a 0..5 enum:
+        //   0 watercolor   1 charcoal   2 line   3 comic   4 take-on-me   5 harold
+        // Set it to a literal to hardcode a filter (handy for reviewing one look),
+        // or leave the rand_preset line active for a random per-preset choice
+        // (rand_preset is constant for the lifetime of a preset).
+        int filt_ = int(floor(rand_preset.x * 5.9999));
+        //int filt_ = 5;
 
         // ---- SOURCE zoom (end-of-life): magnify the incoming video toward the subject BEFORE
         // filtering, so the filter kernels (edge steps, halftone dots, grain) keep their screen
         // scale and the style stays consistent -- only the content zooms. suv keeps the original
         // screen coord for those screen-space overlays; every GetVideo/MaskSeg below now reads the
         // zoomed uv. This bakes into the page, so the zoom advances one step per page-flip.
+        // seg_cx/seg_cy are library uniforms (smoothed, mirror-corrected, ease to centre with no
+        // subject); seg_cy is bottom-up, so flip it for this top-down uv.
         float2 suv = uv;
         float zoom_ = 1.0 + q4 * q4 * 8.0;
-        float2 fv_ = clamp(float2(q7, 1.0 - q8), float2(0.15, 0.15), float2(0.85, 0.85)); // seg_cy is bottom-up
+        float2 fv_ = clamp(float2(seg_cx, 1.0 - seg_cy), float2(0.15, 0.15), float2(0.85, 0.85));
         uv = fv_ + (uv - fv_) / zoom_;
         if (filt_ == 0)
         {
@@ -169,6 +252,37 @@ shader_body
             float3 paper_ = float3(0.98, 0.97, 0.95);
             float3 bg_ = lerp(paper_, ret, 0.35);   // background = mostly white, faint ghost
             ret = lerp(bg_, ret, seg_);
+
+            // --- fine ink lines: paint-band boundaries (subject only) + subject outline ---
+            // Band edges: compare the quantised paint colour against its right/down
+            // neighbour. One posterize step is 0.2 per channel, so a single band change
+            // saturates the line. lp_ sets the line WIDTH (smaller = finer).
+            float2 lp_ = texsize.zw * 1.25;
+            float3 q0_ = PaintQuant(uv, px);
+            float3 qr_ = PaintQuant(uv + float2(lp_.x, 0.0), px);
+            float3 qd_ = PaintQuant(uv + float2(0.0, lp_.y), px);
+            float dr_ = dot(abs(qr_ - q0_), float3(1.0, 1.0, 1.0));
+            float dd_ = dot(abs(qd_ - q0_), float3(1.0, 1.0, 1.0));
+            float band_ = saturate(max(dr_, dd_) * 5.0);
+
+            // Subject outline: gradient of the seg mask, so the figure gets edged even
+            // where it has no internal colour contrast against the whitened background.
+            float sx_ = MaskSeg(uv + float2(lp_.x, 0.0)) - MaskSeg(uv - float2(lp_.x, 0.0));
+            float sy_ = MaskSeg(uv + float2(0.0, lp_.y)) - MaskSeg(uv - float2(0.0, lp_.y));
+            float sil_ = saturate(sqrt(sx_ * sx_ + sy_ * sy_) * 2.5);
+
+            // Don't ink into paint that is already dark: a near-black line on near-black
+            // paint buys no contrast and just reads as mud. lit_ is 0 in the darkest
+            // paint and 1 by mid-tone, measured on the finished paint colour.
+            float plum_ = dot(ret, float3(0.299, 0.587, 0.114));
+            float lit_ = smoothstep(0.10, 0.32, plum_);
+
+            // Band edges are masked to the subject and fully suppressed in dark paint.
+            // The silhouette is only partly suppressed (floor of 0.35): the subject's
+            // outline still has to hold against the white background paper even where
+            // the subject itself is dark.
+            float ink_ = saturate(max(band_ * seg_ * lit_, sil_ * (0.35 + 0.65 * lit_)));
+            ret = lerp(ret, float3(0.06, 0.05, 0.07), ink_ * 0.9);
         }
         else if (filt_ == 1)
         {
@@ -304,7 +418,7 @@ shader_body
 
             ret = saturate(col_);
         }
-        else
+        else if (filt_ == 4)
         {
             // --- FILTER 4 - "Take On Me" pencil rotoscope ---
             // B&W sketch: contour lines + loose back-and-forth pencil shading,
@@ -357,6 +471,187 @@ shader_body
             float ink_ = saturate(line_ + hatch_);
             float tone_ = saturate(0.98 - ink_ * 1.0);
             ret = float3(tone_, tone_, tone_) * float3(0.99, 0.99, 1.0);
+        }
+        else
+        {
+            // --- FILTER 5 - "Harold and the Purple Crayon" ---
+            // A drawing where the artist spent all their time on the SUBJECT and merely
+            // indicated the world around it, rendered in crayon rather than graphite.
+            // Grew out of the charcoal filter, but is its own thing: mass, not line.
+            float2 e_ = texsize.zw * 2.0;
+            float3 L_ = float3(0.299, 0.587, 0.114);
+            float a00 = dot(GetVideo(uv + float2(-e_.x, -e_.y), 0.0).rgb, L_);
+            float a10 = dot(GetVideo(uv + float2( 0.0,  -e_.y), 0.0).rgb, L_);
+            float a20 = dot(GetVideo(uv + float2( e_.x, -e_.y), 0.0).rgb, L_);
+            float a01 = dot(GetVideo(uv + float2(-e_.x,  0.0),  0.0).rgb, L_);
+            float a11 = dot(GetVideo(uv,                        0.0).rgb, L_);
+            float a21 = dot(GetVideo(uv + float2( e_.x,  0.0),  0.0).rgb, L_);
+            float a02 = dot(GetVideo(uv + float2(-e_.x,  e_.y), 0.0).rgb, L_);
+            float a12 = dot(GetVideo(uv + float2( 0.0,   e_.y), 0.0).rgb, L_);
+            float a22 = dot(GetVideo(uv + float2( e_.x,  e_.y), 0.0).rgb, L_);
+            float gx_ = (a20 + 2.0 * a21 + a22) - (a00 + 2.0 * a01 + a02);
+            float gy_ = (a02 + 2.0 * a12 + a22) - (a00 + 2.0 * a10 + a20);
+            float edge_ = sqrt(gx_ * gx_ + gy_ * gy_);
+
+            float seg_ = MaskSeg(uv);
+
+            // paper tooth grain (static per page, since baked on the gate frame)
+            float2 nuv_ = suv * 3.0 + rand_frame.xy;
+            float grain_ = tex2D(sampler_noise_lq, nuv_).x - 0.5;
+
+            // BACKGROUND WARP: displace the background's sample coords by low-freq noise
+            // that changes each page, so its lines land in slightly different places every
+            // time and JUMP, the way redrawn frames do. Subject coords are untouched.
+            float2 wn_ = tex2D(sampler_noise_lq, suv * 1.5 + rand_frame.zw).xy - 0.5;
+            float2 buv_ = uv + wn_ * texsize.zw * 12.0;
+
+            // Background lines come from a Sobel of a BLURRED image, not the sharp one:
+            // only large-scale structure (a torso, a doorframe) produces a gradient that
+            // survives the blur, so the artist "indicates" the big shapes and is incapable
+            // of drawing the clutter -- rather than drawing fine detail faintly.
+            // Feature scale. This has to be LARGE: at a small radius a cluttered room still
+            // has strong gradients everywhere (and camera noise on top), so nearly every
+            // pixel earns a line and the "background" becomes a field of speckle.
+            // The feature-scale BLUR now happens in the video_ pass (see top of file); what is
+            // left here is just differencing it. be_ is the differencing step, in render texels.
+            float2 be_ = texsize.zw * 7.0;
+
+            // --- STROKES: smooth ALONG the line, never across it ---
+            // A drawn stroke is smooth down its length and crisp across its width. A raw
+            // gradient ridge is the opposite: it wobbles along its length (that is the noise
+            // we keep fighting) and we then blur it isotropically, which softens the width
+            // too. So use the gradient's own geometry: the gradient points ACROSS the edge,
+            // therefore the line's tangent is the perpendicular. Walking the tangent and
+            // averaging the edge magnitude:
+            //   - cancels noise along the stroke (it is uncorrelated) while a real edge,
+            //     being coherent along its length, survives -> straighter, cleaner strokes;
+            //   - bridges small dropouts -> continuity, without lowering the threshold;
+            //   - never touches the width -> the stroke stays hard-edged.
+            // The MAX along the tangent doubles as a better hysteresis seed than an isotropic
+            // one: "is there a strong edge further along THIS line?" rather than "anywhere
+            // nearby?", so a weak mark is kept only when it continues a real stroke.
+            float3 g_ = BlurGrad(buv_, be_);
+            float2 tan_ = float2(-g_.y, g_.x);                  // along the line
+            float tlen_ = max(length(tan_), 1e-5);
+            tan_ = (tan_ / tlen_) * texsize.zw * 4.5;           // tangent step (wider = fewer taps)
+
+            // COST: these taps are DEPENDENT (their coords come from the gradient), so they
+            // scatter across the texture and miss cache -- unlike the fixed-offset kernels
+            // elsewhere. Keep the count small and the step wide rather than dense and short:
+            // same reach along the stroke, a third of the fetches.
+            float magSum_ = g_.z;
+            float magMax_ = g_.z;
+            int t_;
+            for (t_ = 1; t_ <= 2; t_ = t_ + 1)
+            {
+                float mp_ = BlurGrad(buv_ + tan_ * float(t_), be_).z;
+                float mn_ = BlurGrad(buv_ - tan_ * float(t_), be_).z;
+                magSum_ = magSum_ + mp_ + mn_;
+                magMax_ = max(magMax_, max(mp_, mn_));
+            }
+            float edgeB_ = magSum_ / 5.0;                       // smoothed ALONG the stroke
+
+            // Averaging along the tangent pulls the magnitudes down vs the raw ridge, so these
+            // bars sit lower than the measured raw percentiles (raw: p85 0.50, p90 0.64).
+            // NOTE: still scene-specific -- the robust version wants per-frame gradient
+            // PERCENTILES from the engine ("top 12% of edges", not "above 0.24").
+            float strong_ = smoothstep(0.42, 0.58, magMax_);    // a real stroke runs through here
+            float weak_ = smoothstep(0.24, 0.34, edgeB_);       // permissive: continues the stroke
+            float strokeB_ = weak_ * strong_;
+
+            // BOIL: this filter only bakes on the page-turn gate frame, so rand_frame is
+            // effectively a per-PAGE random. Feeding it into the background marks means a
+            // different subset of lines survives on every page -- the background is
+            // re-sketched each time, like hand-drawn animation, while the subject (which
+            // does not use these terms) stays stable.
+            float2 jb_ = tex2D(sampler_noise_lq, suv * 2.0 + rand_frame.xy).xy - 0.5;
+
+            // MARKER, NOT CRAYON. Look at the book: the strokes are solid, uniform-density,
+            // hard-edged -- a marker or brush pen, not wax. Wax behaviour (paper tooth
+            // breaking up the fill, gaps chopping strokes into segments, coverage varying
+            // with pressure) is what was costing us continuity: it is the material fighting
+            // the target. A marker line does not break up along its length.
+            //
+            // So the hand-drawn wobble lives in WHERE the line goes, not in its fill: the
+            // per-page boil (jb_, above) still moves the strokes around, but the ink itself
+            // stays continuous and opaque. Only a slight density variation survives, to keep
+            // it from looking printed.
+            float2 gp_ = suv * texsize.xy + jb_ * 40.0;                 // marks wander page to page
+            float2 gdir_ = float2(0.87, 0.50);
+            float galong_ = dot(gp_, gdir_);
+            float gacross_ = dot(gp_, float2(-gdir_.y, gdir_.x));
+            float gseg_ = tex2D(sampler_noise_lq,
+                                float2(galong_ * 0.0035, gacross_ * 0.02) + rand_frame.zw).x;
+            strokeB_ = strokeB_ * (0.88 + 0.12 * gseg_);                // near-uniform ink
+
+            // --- SUBJECT: FINE lines + a little shading ---
+            // The figure is where the artist spent the time, so it gets what the room does not:
+            // detail and tone. Two deliberate differences from the background:
+            //
+            // 1. FINER lines, but SPARINGLY. The flat colour cels below already separate shirt
+            //    from skin from shorts, so interior lines that merely retrace a colour boundary
+            //    are redundant detail -- they make the figure look scribbled-over rather than
+            //    drawn. Only STRONG signals earn an interior line now (eyes, deep folds, the
+            //    edge of a sleeve): the bar is well above the background's.
+            float lineS_ = smoothstep(0.22, 0.32, edge_);   // edge_ = the fine Sobel above
+
+            //    The SILHOUETTE is the exception, and it is drawn from the seg mask rather than
+            //    from image contrast: the figure's outline has to hold against the purple world
+            //    even where he happens to be the same tone as what is behind him.
+            float sgx_ = MaskSeg(uv + float2(e_.x, 0.0)) - MaskSeg(uv - float2(e_.x, 0.0));
+            float sgy_ = MaskSeg(uv + float2(0.0, e_.y)) - MaskSeg(uv - float2(0.0, e_.y));
+            float silS_ = saturate(sqrt(sgx_ * sgx_ + sgy_ * sgy_) * 2.5);
+            lineS_ = saturate(max(lineS_, silS_));
+
+            // 2. FLAT COLOUR CELS. Not a continuous tonal wash -- the book fills its figures with
+            //    a few flat colours inside the line. So take the subject's actual colour, punch the
+            //    saturation, and posterize it HARD: 3 levels per channel. Quantise a BLURRED colour,
+            //    not the raw pixel, or camera noise makes every cel boundary fizz with speckle as
+            //    neighbouring pixels land in different bands.
+            float2 cb_ = texsize.zw * 3.0;
+            float3 c_ = GetVideo(uv, 0.0).rgb
+                      + GetVideo(uv + float2( cb_.x,  cb_.y), 0.0).rgb
+                      + GetVideo(uv + float2(-cb_.x,  cb_.y), 0.0).rgb
+                      + GetVideo(uv + float2( cb_.x, -cb_.y), 0.0).rgb
+                      + GetVideo(uv + float2(-cb_.x, -cb_.y), 0.0).rgb;
+            c_ = c_ / 5.0;
+
+            float clum_ = dot(c_, L_);
+            c_ = saturate(lerp(float3(clum_, clum_, clum_), c_, 1.45));   // push the colour
+            c_ = floor(c_ * 3.0 + 0.5) / 3.0;                             // 3 flat levels/channel
+
+            float inkB_ = saturate(strokeB_);
+
+            // --- TWO INKS ---
+            // In the book the purple crayon draws the WORLD; Harold himself is drawn in BLACK
+            // line. So the subject and the background are not the same pen:
+            //   background = purple marker (#9a1482, sampled from the book art -- a MAGENTA-
+            //                purple, not a violet), on plain white stock;
+            //   subject    = black line.
+            float3 paper_ = float3(0.98, 0.98, 0.98);
+            float3 purple_ = float3(0.60, 0.08, 0.51);      // #9a1482, the crayon
+            float3 black_ = float3(0.09, 0.08, 0.10);       // Harold's own line
+
+            // The two coverage curves also differ ON PURPOSE:
+            //   BACKGROUND is marker -- opaque and flat, a stroke is down or it isn't. A steep
+            //   step keeps lines solid and continuous (a shallow ramp dithers them into pale
+            //   speckle, which is what we spent several rounds fixing).
+            float covB_ = smoothstep(0.10, 0.28, inkB_);    // flat, opaque marker
+
+            // The figure: flat posterized colour, knocked back toward the paper so it reads as
+            // laid-in colour rather than as photographic video showing through the drawing...
+            float3 cel_ = lerp(paper_, c_, 0.80);
+
+            // ...with the black line drawn ON TOP of the fill (not blended into it, which would
+            // tint the linework with whatever colour happens to be under it).
+            float3 harold_ = lerp(cel_, black_, lineS_);
+
+            float3 world_ = lerp(paper_, purple_, covB_);
+            ret = lerp(world_, harold_, seg_);
+
+            // Paper grain lives on the bare PAPER: not in the ink, and not on the colour cels.
+            float bare_ = (1.0 - covB_) * (1.0 - seg_);
+            ret = ret + grain_ * 0.03 * bare_;
         }
 
         // startup guard: video_frame_count is the number of frames uploaded to the
