@@ -51,12 +51,11 @@ declaration in the warp shader).
 
 | Preset | Rating | Notes |
 |---|---|---|
-| rorschach — suksma, broadcloak flacc roam3 nz+ | ★★★★★ | The best of the set. Mirrored figure emerging from an ink blot; the dark field is what makes the symmetry read as a Rorschach rather than a kaleidoscope. Its `video_` shader (motion-gated seg matte) only started running once the palette-sampler bug was fixed — it is richer now than in any earlier capture. Cleaned up: 76 dead lines removed (all four disabled `wavecode_*` blocks + disabled `shapecode_3`; shapes 0–2 are live and draw the figure). Absorbed the identical `rorschach x 3` (same code, plus a commented-out film-negative experiment). In the top-level `favorites.txt`. |
+| rorschach — suksma, broadcloak flacc roam3 nz+ | ★★★★★ | The best of the set. Mirrored figure emerging from an ink blot; the dark field is what makes the symmetry read as a Rorschach rather than a kaleidoscope. Its `video_` shader (motion-gated seg matte) only started running once the palette-sampler bug was fixed — it is richer now than in any earlier capture. Cleaned up: 76 dead lines removed (all four disabled `wavecode_*` blocks + disabled `shapecode_3`; shapes 0–2 are live and draw the figure). Absorbed the identical `rorschach x 3` (same code, plus a commented-out film-negative experiment). |
 | blob-shadow — various artists | ★★★ | Glowing green figure against a blue blob field. Reads clearly in the composite (it looked far weaker in the pre-composite view, which is what the broken screenshot was showing). |
-| falling — Hexcollie, Spooky nz+ psychos on the internet | — | In the top-level `favorites.txt`. |
+| falling — Hexcollie, Spooky nz+ psychos on the internet | ★★★★ | Good for what it is. |
 | ghost — Geiss, Skin Dots 10b (video motion reaction) | — | Shimmering moiré ripple field, figure dissolving through it. Only 5 lines from `ghost color zoom`. **Needs audio to judge** — it looks dead in silence. |
 | ghost color zoom — Geiss, Skin Dots 10b | — | As above but louder: bigger colour blooms, stronger zoom. |
 | splitscan — Flexi + geiss, the deep diver's manifesto | ★★★★★ | Slit-scan / time-smear: vertical strips sampled from different points in the video history, so motion drags into flowing ribbons; hot reds/oranges against acid green, with hard vertical banding snapping in on transients. **The figure is barely legible** — a person-shaped disturbance rather than a subject — and in stills that looks like a flaw. It isn't: in motion this is one of the best things in the set. Cleaned up: 222 dead lines removed (489 → 267; all 8 wave/shape blocks disabled, plus their code bodies). |
 | recursive quad — time-offset | — | |
-| splitscan — Flexi + geiss, the deep diver's manifesto | — | |
-| suksma — biotoxins on strings, walk on it | — | In the top-level `favorites.txt`. |
+| suksma — biotoxins on strings, walk on it | — | |
