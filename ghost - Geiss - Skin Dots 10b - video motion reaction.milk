@@ -87,27 +87,88 @@ shapecode_1_enabled=0
 shapecode_2_enabled=0
 shapecode_3_enabled=0
 per_frame_init_1=ccx = 0.5; ccy = 0.5; vcx = 0; vcy = 0;
+per_frame_init_2=kick = 0; swell = 0;
 per_frame_1=wave_r = wave_r + 0.350*( 0.60*sin(0.980*time) + 0.40*sin(1.047*time) );
 per_frame_2=wave_g = wave_g + 0.350*( 0.60*sin(0.835*time) + 0.40*sin(1.081*time) );
 per_frame_3=wave_b = wave_b + 0.350*( 0.60*sin(0.814*time) + 0.40*sin(1.011*time) );
-per_frame_4=dts = min(30/max(fps,1),3); 
+per_frame_4=dts = min(30/max(fps,1),3);
+
+// --- MUSIC DRIVE ---------------------------------------------------------------
+// This preset used to move on a CLOCK, not on the music: the only audio term in it was
+// (bass_att - 1)*0.10 on zoom -- and bass_att is a smoothed average, so even that was
+// sluggish. Everything else was sinusoids of `time` at 0.03-0.05 Hz. Hence "slow".
+//
+// kick  = a sharp per-beat envelope (snaps to 1 on the onset, decays over ~1/3 s), so the
+//         image PUNCHES on the beat instead of drifting.
+// swell = a slower follower of the same, for things that should surge rather than snap.
+// Frame-rate independent: the decay is per-second, not per-frame.
+per_frame_5=beatdk = pow(0.02, min(1/max(fps,1), 0.1));           // ~1/3 s half-life
+per_frame_6=kick = max(kick * beatdk, beat_onset);                // snap up, decay down
+per_frame_7=swell = swell * 0.94 + kick * 0.06;                   // lagging surge
+// Fall back to raw bass when the beat tracker has no confidence (silence, or non-percussive
+// music): the preset should never go inert just because the tracker is unsure.
+per_frame_8=drive = if(above(beat_conf, 0.35), kick, max(0, bass - 1) * 0.7);
 //vcx = vcx*0.94 + (rand(2001)/1000-1)*0.0020; vcy = vcy*0.94 + (rand(2001)/1000-1)*0.0020; ccx = ccx + (vcx - (ccx-0.5)*0.012)*dts; ccy = ccy + (vcy - (ccy-0.5)*0.012)*dts; ccx = max(0.30,min(0.70,ccx)); ccy = max(0.30,min(0.70,ccy));
 //=cx = ccx; cy = ccy;
-per_frame_5=cx = cx + 0.110*( 0.60*sin(0.374*time) + 0.40*sin(0.294*time) );
-per_frame_6=cy = cy + 0.110*( 0.60*sin(0.393*time) + 0.40*sin(0.223*time) );
-per_frame_7=decay = decay - 0.01*equal(frame%20,0);
-#per_frame_7=zoom = zoom + 5.2*(0.01*cos(time*0.317+1) + 0.01*cos(time*0.1132+4)) + (bass_att - 1)*0.05;
-per_frame_8=zoom = zoom + 1.3*(0.01*cos(time*0.317+1) + 0.01*cos(time*0.1132+4)) + (bass_att - 1)*0.10;
-per_frame_9=zoom = (zoom - 1) * (30/fps) + 1;
-per_frame_10=rot  = rot  + 0.5*(0.01*cos(time*0.214+3) + 0.01*cos(time*0.2732+2));
-per_frame_11=rot = (rot-1) * (30/fps) + 1;
-per_frame_12=wave_mystery = time*0.05;
-per_frame_13=// --- video motion detection ---
-per_frame_14=// Mode 3: library computes per-pixel video alpha as the RGB-difference
-per_frame_15=// magnitude vs. the previous video frame, scaled by video_alpha_value.
-per_frame_16=video_alpha_mode = 3;
-per_frame_17=video_alpha_value = 1.0;
-per_frame_18=video_alpha_init = 0.0;
+per_frame_9=cx = seg_cx;
+per_frame_10=cy = seg_cy;
+
+// Decay has two jobs, and it needs both.
+//   1. A STEADY bleed, so feedback accumulation can't saturate the globs. The original did this
+//      as `decay - 0.01*equal(frame%20,0)`: a 1% flush every 20 FRAMES -- which is every 0.67s at
+//      30fps but every 0.14s at 144fps, so the look drifts with the frame rate. (The preset already
+//      normalizes zoom/rot to 30fps, so this line was the odd one out.) Same average bleed,
+//      expressed per SECOND instead: 0.015/s, spread smoothly rather than in periodic dips.
+//   2. A BEAT flush, so the image clears and re-forms with the music instead of smearing at a
+//      constant rate. This is additive -- it never removes the steady bleed, so silence is safe.
+per_frame_11=decay = decay - 0.015/max(fps,1) - 0.010 * drive;
+
+// Zoom: keep the slow drift as a bed, but put a real punch on top of it.
+per_frame_12=zoom = zoom + 1.3*(0.01*cos(time*0.317+1) + 0.01*cos(time*0.1132+4)) + (bass_att - 1)*0.10;
+per_frame_13=zoom = zoom + 0.055 * drive + 0.015 * swell;         // beat punch + surge
+per_frame_14=zoom = (zoom - 1) * (30/fps) + 1;
+
+// Rotation: was pure clock. Now it kicks with the beat (sign alternates per beat so it
+// rocks back and forth rather than spinning off in one direction).
+per_frame_15=rot  = rot  + 0.5*(0.01*cos(time*0.214+3) + 0.01*cos(time*0.2732+2));
+per_frame_16=rot = rot + 0.012 * drive * if(above(beat_phase, 3.14159), 1, -1);
+per_frame_17=rot = (rot-1) * (30/fps) + 1;
+
+per_frame_18=wave_mystery = time*0.05;
+
+// Hand the drive to the warp shader: motion sparkle scales with the music, so a person
+// moving ON the beat lights up far more than one moving between beats.
+per_frame_19=q1 = drive;
+per_frame_20=q2 = swell;
+per_frame_21=// --- video motion detection ---
+per_frame_22=// Mode 3: library computes per-pixel video alpha as the RGB-difference
+per_frame_23=// magnitude vs. the previous video frame, scaled by video_alpha_value.
+per_frame_24=video_alpha_mode = 3;
+per_frame_25=video_alpha_value = 1.0;
+per_frame_26=video_alpha_init = 0.0;
+
+// --- GHOST LAG: the apparition doesn't quite keep up with the body ---------------
+// The video feed is shifted horizontally AGAINST the subject's horizontal speed, so the ghost
+// trails a moving body and slides back over it when they stop. No spring is needed: seg_vx is
+// already engine-smoothed (tau ~= 0.1s), which supplies the ease-in/ease-out by itself.
+//
+// PANG is a gain, and also a UNIT FIX: seg_vx is a velocity (screen-fractions per SECOND) used
+// here as a displacement (screen-fractions), so it needs scaling as well as a sign flip.
+//
+// The gain is deliberately HIGH: the ghost is meant to fly right off the body and dump colour
+// across the frame, not politely trail it. Note the consequence -- at PANG 1.2 the clamp binds
+// at seg_vx = 0.125/s, i.e. at little more than a drift, so in practice any real movement pins
+// the shift to the clamp. The CLAMP, not the gain, is what sets how far the ghost can fly.
+per_frame_27=PANG = 1.2;
+per_frame_28=q3 = max(-0.15, min(0.15, -seg_vx * PANG));          // -> the shaders shift the feed
+// --- move the apparent ZOOM center to the seg centroid ---
+// The engine zooms about screen center (0.5); cx/cy only re-center rotation/stretch.
+// A zoom about C equals the screen-centered zoom plus a translation of (C-0.5)*(1/zoom-1).
+// zoom2 is the engine's per-vertex zoom (radius-shaped by zoomexp); aspect maps the screen-
+// fraction centroid into the warp's aspect-corrected space.
+per_pixel_1=zoom2 = zoom^(zoomexp^(rad*2 - 1));
+per_pixel_2=dx = (seg_cx - 0.5)*aspectx*(1/zoom2 - 1);
+per_pixel_3=dy = (0.5 - seg_cy)*aspecty*(1/zoom2 - 1);
 // per_frame_18=wipe_time = fmod(time,5.0);
 // per_frame_19=zoom = if(wipe_time < 1.0, 0.93, zoom);
 // per_frame_20=ob_size = if(wipe_time < 1.0, 0.1, ob_size);
@@ -115,8 +176,14 @@ per_frame_18=video_alpha_init = 0.0;
 warp_1=``` 
 shader_body
 {
-   float video_alpha = MaskSeg(uv);
-   float video_diff = abs(video_alpha - MaskSegBlur(uv));
+   // GHOST LAG: shift the video feed horizontally by q3, which is driven AGAINST the subject's
+   // horizontal speed (see per_frame). The apparition therefore flies away from a moving body
+   // and settles back over it when they stop -- and because the feedback keeps whatever it was
+   // given, the ghost drops colour wherever it has been.
+   float2 guv = uv + float2(q3, 0.0);
+
+   float video_alpha = MaskSeg(guv);
+   float video_diff = abs(video_alpha - MaskSegBlur(guv));
 
    // take the difference between the crisp and blurred images,
    // then add it back into the image.  Creates spots and stripes over time.
@@ -124,10 +191,12 @@ shader_body
    ret = saturate(ret + (ret - GetBlur1(uv))*0.25);
    ret *= saturate(0.9 + video_alpha); // slow decay to keep the globs from getting too bright
 
-   // add noise:
+   // add noise, scaled by the MUSIC (q1 = the per-beat drive envelope). The sparkle that forms
+   // the globs now bursts on the beat instead of trickling in at a constant rate, so someone
+   // moving on the beat lights up far more than someone moving between beats.
    float2 dither_uv = uv_orig*texsize.xy*texsize_noise_lq.zw * 0.4 + rand_frame.xy;
    float3 noise = tex2D(sampler_noise_lq, dither_uv).xyz-0.5;
-   ret += noise * video_diff;
+   ret += noise * video_diff * (0.6 + 2.2*q1);
 
    // desaturate over time, to keep the globs white
     ret = lerp(ret, lum(ret), 0.10 * (0.3 - video_alpha));
@@ -141,15 +210,20 @@ shader_body
     float3 magenta = float3(255,0,144)/255.0;
     ret = tex2D(sampler_main, uv).xyz;
 
-    float motion = MaskMotion(uv) * MaskSeg(uv);
+    // Same ghost-lag shift as the warp (q3), so the halo and the motion tint travel WITH the
+    // apparition. Left un-shifted they would stay pinned to the real body while the ghost slid
+    // out from under them, which reads as a bug rather than as a lag.
+    float2 guv = uv + float2(q3, 0.0);
+
+    float motion = MaskMotion(guv) * MaskSeg(guv);
 
     // Two rings straddling the silhouette edge, from the mask buffer's seg vs seg-blur:
     //   halo  = seg_blur - seg : positive just OUTSIDE the edge (blur spills out).
     //   rhalo = seg - seg_blur : positive just INSIDE the edge (seg full, blur ramping).
-    float outer_halo  = saturate((MaskSegBlur(uv) - MaskSeg(uv)) * 1.0);
-    float inner_halo = saturate((MaskSeg(uv) - MaskSegBlur(uv)) * 1.0);
+    float outer_halo  = saturate((MaskSegBlur(guv) - MaskSeg(guv)) * 1.0);
+    float inner_halo = saturate((MaskSeg(guv) - MaskSegBlur(guv)) * 1.0);
 
-    ret = lerp(ret, magenta, 0.3 * outer_halo + 0.2*motion);
+    ret = lerp(ret, magenta, 0.3 * inner_halo + 0.2*motion);
 //    ret = lerp(ret, float3(0,0,0), rhalo);
 }
 ```
