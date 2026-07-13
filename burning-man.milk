@@ -1,0 +1,375 @@
+// BURNING MAN -- you are the Man. Hit the pose and catch fire.
+//
+// TWO ACTS.
+//   MODE 1 (cold): white on black, a small echo that decays fast. The Man is just a drawing of you.
+//   MODE 2 (lit):  you MATCHED the logo -- arms up in the V, legs apart. The strokes cycle through
+//                  red/orange/yellow at different speeds, everything drifts upward and the warp
+//                  builds. Once lit, it stays lit.
+//   If you never match, the figure fades out at ~15 s and the preset goes dark. (A preset cannot
+//   advance the playlist itself; there is no eval hook for "I am done".)
+//
+// THE FIGURE. The logo is NOT a stick figure: it is two continuous sweeping strokes plus a floating
+// diamond. Each stroke runs from a FOOT, bows inward through the HIP to a pinched waist, then flares
+// back out through the SHOULDER to a WRIST. Arm and leg are ONE curve -- a cubic Bezier whose
+// control net is four joints:
+//
+//     (x0,y0) = ANKLE     endpoint -- the curve passes through it
+//     (x1,y1) = HIP       control  -- pulls the curve without being touched
+//     (x2,y2) = SHOULDER  control
+//     (x3,y3) = WRIST     endpoint
+//
+// The pinched waist falls out for free: hip and shoulder sit closer to the centreline than foot and
+// hand, so each stroke bows inward. Drawn with the strokecode_ primitive (a real cubic-Bezier ribbon
+// with variable width), so the taper w0 -> wmid -> w1 sharpens it to points at wrist and foot.
+//
+// Requires: Video Mask = seg + a Video Pose Model. Stand back far enough to get your FEET in frame --
+// the match test needs your ankles.
+MILKDROP_PRESET_VERSION=201
+PSVERSION=2
+PSVERSION_WARP=2
+PSVERSION_COMP=2
+[preset00]
+fRating=5.0
+fGammaAdj=1.6
+fDecay=0.90
+fVideoEchoAlpha=0.0
+nWaveMode=7
+bTexWrap=0
+bDarkenCenter=0
+fWaveAlpha=0.0
+zoom=1.0
+rot=0
+cx=0.5
+cy=0.5
+dx=0
+dy=0
+warp=0
+sx=1
+sy=1
+ob_size=0.0
+ob_a=0.0
+ib_size=0.0
+ib_a=0.0
+b1n=0
+b2n=0
+b3n=0
+b1x=1
+b2x=1
+b3x=1
+
+// ======================= BODY FRAME =======================================
+per_frame_1=lsx = pose(JOINT_L_SHOULDER, POSE_X); lsy = pose(JOINT_L_SHOULDER, POSE_Y);
+per_frame_2=rsx = pose(JOINT_R_SHOULDER, POSE_X); rsy = pose(JOINT_R_SHOULDER, POSE_Y);
+// Shoulder span = one "body unit". Every measurement below is in these units, so nothing depends on
+// how far you stand from the camera.
+per_frame_3=bs = sqrt((lsx-rsx)*(lsx-rsx) + (lsy-rsy)*(lsy-rsy)); bs = max(0.06, min(0.45, bs));
+per_frame_4=q6 = (lsx + rsx) * 0.5; q7 = (lsy + rsy) * 0.5;
+per_frame_5=q1 = bs; q3 = pose_valid;
+// The preset-visible aspectx/aspecty are the INVERSE of the renderer's (PerFrameContext assigns
+// invAspectX/invAspectY), so reciprocate to get the factors the stroke renderer uses internally.
+per_frame_6=q4 = 1/aspectx; q5 = 1/aspecty;
+
+// ======================= THE MATCH TEST ===================================
+// Scored on LIMBS, not endpoints. Five soft criteria, each producing an ERROR normalized so that
+// 1.0 means "just at tolerance". They are combined as a SUM OF SQUARES, so a pose that is a little
+// off everywhere still matches, while one that is badly wrong in a single limb does not. Nothing is
+// a veto -- that was the old design's flaw: any one strict test made the pose silently unhittable.
+//
+// ARMS: straight (shoulder-elbow-wrist), symmetric, and fairly high.
+// LEGS: straight (hip-knee-ankle) and symmetric.
+//
+// Everything is in body units, offset from the shoulder midpoint. Preset space is Y-DOWN, so "up"
+// is NEGATIVE.
+per_frame_7=lex = (pose(JOINT_L_ELBOW, POSE_X)-q6)/bs; ley = (pose(JOINT_L_ELBOW, POSE_Y)-q7)/bs;
+per_frame_8=rex = (pose(JOINT_R_ELBOW, POSE_X)-q6)/bs; rey = (pose(JOINT_R_ELBOW, POSE_Y)-q7)/bs;
+per_frame_9=lwx = (pose(JOINT_L_WRIST, POSE_X)-q6)/bs; lwy = (pose(JOINT_L_WRIST, POSE_Y)-q7)/bs;
+per_frame_10=rwx = (pose(JOINT_R_WRIST, POSE_X)-q6)/bs; rwy = (pose(JOINT_R_WRIST, POSE_Y)-q7)/bs;
+per_frame_11=lsbx = (lsx-q6)/bs; lsby = (lsy-q7)/bs; rsbx = (rsx-q6)/bs; rsby = (rsy-q7)/bs;
+per_frame_12=lhx = (pose(JOINT_L_HIP, POSE_X)-q6)/bs; lhy = (pose(JOINT_L_HIP, POSE_Y)-q7)/bs;
+per_frame_13=rhx = (pose(JOINT_R_HIP, POSE_X)-q6)/bs; rhy = (pose(JOINT_R_HIP, POSE_Y)-q7)/bs;
+per_frame_14=lkx = (pose(JOINT_L_KNEE, POSE_X)-q6)/bs; lky = (pose(JOINT_L_KNEE, POSE_Y)-q7)/bs;
+per_frame_15=rkx = (pose(JOINT_R_KNEE, POSE_X)-q6)/bs; rky = (pose(JOINT_R_KNEE, POSE_Y)-q7)/bs;
+per_frame_16=lax = (pose(JOINT_L_ANKLE, POSE_X)-q6)/bs; lay = (pose(JOINT_L_ANKLE, POSE_Y)-q7)/bs;
+per_frame_17=rax = (pose(JOINT_R_ANKLE, POSE_X)-q6)/bs; ray = (pose(JOINT_R_ANKLE, POSE_Y)-q7)/bs;
+
+// --- STRAIGHTNESS. The cosine of the angle at the joint: upper-limb vector vs lower-limb vector.
+// 1 = perfectly straight, 0 = bent 90 deg. The error is (1-cos)/tolerance.
+//
+// CURRENTLY DISABLED (wstr = 0). The elbow and especially the KNEE are the least reliable keypoints
+// in each chain, so their estimated angle is never quite collinear even when you are standing dead
+// straight -- which put a floor under the leg score that no stance could clear, capping the legs at
+// yellow. Raise wstr to bring it back once the rest is tuned.
+per_frame_18=wstr = 0;
+per_frame_19=u1 = lex-lsbx; v1 = ley-lsby; u2 = lwx-lex; v2 = lwy-ley;
+per_frame_20=n1 = sqrt(u1*u1+v1*v1)+0.001; n2 = sqrt(u2*u2+v2*v2)+0.001;
+per_frame_21=easl = wstr * max(0, 1 - (u1*u2+v1*v2)/(n1*n2)) / 0.50;
+per_frame_22=u1 = rex-rsbx; v1 = rey-rsby; u2 = rwx-rex; v2 = rwy-rey;
+per_frame_23=n1 = sqrt(u1*u1+v1*v1)+0.001; n2 = sqrt(u2*u2+v2*v2)+0.001;
+per_frame_24=easr = wstr * max(0, 1 - (u1*u2+v1*v2)/(n1*n2)) / 0.50;
+per_frame_25=u1 = lkx-lhx; v1 = lky-lhy; u2 = lax-lkx; v2 = lay-lky;
+per_frame_26=n1 = sqrt(u1*u1+v1*v1)+0.001; n2 = sqrt(u2*u2+v2*v2)+0.001;
+per_frame_27=elsl = wstr * max(0, 1 - (u1*u2+v1*v2)/(n1*n2)) / 0.60;
+per_frame_28=u1 = rkx-rhx; v1 = rky-rhy; u2 = rax-rkx; v2 = ray-rky;
+per_frame_29=n1 = sqrt(u1*u1+v1*v1)+0.001; n2 = sqrt(u2*u2+v2*v2)+0.001;
+per_frame_30=elsr = wstr * max(0, 1 - (u1*u2+v1*v2)/(n1*n2)) / 0.60;
+
+// --- LIMB ANGLES. Each limb is reduced to ONE number: its angle from vertical, measured with the
+// horizontal component ABSOLUTE. That makes it sign-free, so left and right are directly comparable
+// and symmetry is just |angL - angR|.
+// Arms measure from UP (0 = straight overhead, 90 deg = horizontal); legs measure from DOWN.
+per_frame_31=aal = atan2(abs(lwx-lsbx), -(lwy-lsby)); aar = atan2(abs(rwx-rsbx), -(rwy-rsby));
+per_frame_32=all = atan2(abs(lax-lhx),   (lay-lhy));  alr = atan2(abs(rax-rhx),   (ray-rhy));
+
+// --- HEIGHT / SPREAD, deliberately LOOSE. How high you hold the V matters much less than whether
+// it IS a V, so this criterion gets a fractional weight (whgt) and a wide free band. Arms want
+// roughly 45 deg up-and-out, free +/-35 deg; legs roughly 20 deg out, free +/-30 deg.
+per_frame_33=whgt = 0.25;
+per_frame_34=eahl = whgt * max(0, abs(aal - 0.785) - 0.61) / 0.60;
+per_frame_35=eahr = whgt * max(0, abs(aar - 0.785) - 0.61) / 0.60;
+per_frame_36=elhl = whgt * max(0, abs(all - 0.35) - 0.52) / 0.60;
+per_frame_37=elhr = whgt * max(0, abs(alr - 0.35) - 0.52) / 0.60;
+
+// --- SYMMETRY: the criterion that actually defines the pose. Full weight, tighter tolerance
+// (~29 deg). A lopsided V is not the logo, however high the arms are.
+per_frame_38=wsym = 1.0;
+per_frame_39=easym = wsym * abs(aal - aar) / 0.50;
+per_frame_40=elsym = wsym * abs(all - alr) / 0.50;
+// --- SPLAY: how far OUTWARD each end is from its own root, in that limb's own direction.
+// This replaces a binary "are the limbs on opposite sides" test, which was a cliff: standing
+// normally your ankles sit almost directly under your hips, so (ankle_x - hip_x) hovers at zero and
+// its SIGN FLIPS on noise -- slamming in a full penalty at random and pinning the legs at yellow no
+// matter how good the stance was. Splay is graded and per-limb, so it can be satisfied smoothly.
+//
+// "Outward" for a limb is whichever way its root sits from the centreline (sgn of the hip/shoulder x).
+per_frame_41=sgl = if(above(lhx, 0), 1, -1); sgr = if(above(rhx, 0), 1, -1);
+per_frame_42=sga = if(above(lsbx, 0), 1, -1); sgb = if(above(rsbx, 0), 1, -1);
+// Arms want to reach well out (0.6 body units); legs only need to clear their hips (0.2).
+per_frame_43=eopa = max(0, 0.60 - (lwx-lsbx)*sga) / 0.60;
+per_frame_44=eopb = max(0, 0.60 - (rwx-rsbx)*sgb) / 0.60;
+per_frame_45=eopl = max(0, 0.20 - (lax-lhx)*sgl) / 0.40;
+per_frame_46=eopr = max(0, 0.20 - (rax-rhx)*sgr) / 0.40;
+
+// --- PER-LIMB ERROR.
+// Each limb carries its own errors plus the shared symmetry term (a property of the PAIR, so both
+// limbs of a lopsided V wear it).
+//
+// THE LEGS ARE OUT OF THE SCORE (wleg = 0). The lower-body keypoints are simply not good enough at
+// this framing: ankle and knee estimates jitter even when you stand still, which put an irreducible
+// floor under the leg terms and capped the whole figure at yellow no matter what the stance was. The
+// leg maths above is left intact and weighted to zero -- set wleg = 1 to bring it back.
+per_frame_47=wleg = 0;
+per_frame_48=eaL = easl*easl + eahl*eahl + easym*easym + eopa*eopa;
+per_frame_49=eaR = easr*easr + eahr*eahr + easym*easym + eopb*eopb;
+per_frame_50=elL = wleg * (elsl*elsl + elhl*elhl + elsym*elsym + eopl*eopl);
+per_frame_51=elR = wleg * (elsr*elsr + elhr*elhr + elsym*elsym + eopr*eopr);
+
+// THE TWO READINGS. The trigger must be LOOSE (you have to be able to hit the pose), but a loose
+// score SATURATES -- anything roughly symmetric reads as ~1.0, so the colour has no resolution left
+// exactly where you need it, near the top. So the tell uses a much SHARPER curve than the trigger.
+// Same errors, two exponents:
+//   /2.5 -> the trigger. Forgiving. Reaches 0.80 (ignition) for a decent V.
+//   /1.2 -> the tell.    Sharp. Still climbing when the loose score has long since pinned at 1.
+per_frame_52=q13 = exp(-eaL/1.2); q14 = exp(-eaR/1.2);
+// A foot end has nothing of its own to report now, so it mirrors its own arm -- each stroke is one
+// continuous limb anyway, so it simply reads as a single hot/cold curve.
+per_frame_53=q15 = q13; q16 = q14;
+
+per_frame_54=ssd = eaL + eaR + elL + elR;
+// The same sharp reading of the whole body, for the head (it has no limb of its own).
+per_frame_55=q12 = exp(-ssd/2.4);
+// Confidence is a soft multiplier, not a gate -- and it no longer looks at the ankles, which are not
+// part of the score any more.
+per_frame_56=mc = min(pose(JOINT_L_WRIST,POSE_CONF), pose(JOINT_R_WRIST,POSE_CONF));
+per_frame_57=gc = min(1, max(0, (mc - 0.10)/0.25));
+per_frame_58=mtch = exp(-ssd/2.5) * gc * q3;
+
+// ======================= IGNITION =========================================
+per_frame_59=t0 = if(equal(inited, 0), time, t0); inited = 1; el = time - t0;
+// The match must be HELD, not flickered through: hold fills in ~0.4 s of match and empties in ~0.8 s
+// without one, so a frame of noise can't light the fire and a frame of dropout can't kill it.
+per_frame_60=dt = 1/max(1, fps);
+per_frame_61=hold = max(0, min(1, hold + if(above(mtch, 0.80), dt/0.4, -dt/0.8)));
+// Latched: once you have hit the pose, you are the Man for good.
+per_frame_62=lit = max(lit, if(above(hold, 0.999), 1, 0));
+// Ignition RAMP: the fire takes ~1.5 s to come up, so mode 2 arrives as a swell, not a cut.
+per_frame_63=ig = ig + (lit - ig) * min(1, dt/1.5);
+// Shaders can ONLY see q1..q32 -- lit/ig/mtch are eval-context locals and invisible to GLSL. So
+// bridge all three flavours of "on fire":
+//   q2  = the RAMP    (0 -> 1 over ~1.5 s)  -- use for anything that should swell in.
+//   q10 = the LATCH   (hard 0 or 1)         -- use for anything that should switch instantly.
+//   q11 = the SPARK   (peaks at ignition, decays as the ramp catches up) -- the flash of catching.
+per_frame_64=q2 = ig;
+per_frame_65=q10 = lit;
+per_frame_66=q11 = max(0, lit - ig);
+// The 15 s clock: if you never matched, fade out over 2 s and hand the playlist back via
+// preset_complete. Ignition cancels it -- once you are the Man, the preset is yours.
+per_frame_67=q8 = if(above(lit, 0.5), 1, 1 - min(1, max(0, (el - 15)/2)));
+per_frame_68=preset_complete = if(above(lit, 0.5), 0, above(el, 17.5));
+per_frame_69=q9 = 1;
+
+// ======================= THE TELL: WARMTH =================================
+// The figure warms toward YELLOW as you close in on the pose. This is the whole feedback loop: it is
+// not a hint about WHAT the pose is (you still have to find that), only about HOW CLOSE you are, so
+// the discovery survives -- you stumble into a warm patch of the search space and then chase it.
+//
+// The mapping is deliberately DEAD until you are already fairly close: below 0.35 the score buys you
+// nothing and the Man stays white. From there it ramps, hitting full yellow exactly at the ignition
+// threshold (0.80) -- so "fully yellow" and "about to catch" are the same instant, held for 0.4 s.
+// DEBUG -- swap q9 for one of these to find out WHY a pose is not matching (brightness = score):
+//   whole score:   q9 = 0.15 + 0.85*mtch;
+//   arms only:     q9 = 0.15 + 0.85*exp(-(easl*easl + easr*easr + eahl*eahl + eahr*eahr + easym*easym + eopa*eopa)/2);
+//   legs only:     q9 = 0.15 + 0.85*exp(-(elsl*elsl + elsr*elsr + elhl*elhl + elhr*elhr + elsym*elsym + eopl*eopl)/2);
+//   confidence:    per_frame_53=q9 = 0.15 + 0.85*gc;
+
+// ======================= MODE 1 -> MODE 2 =================================
+// Cold: a short echo that decays fast. Lit: an updraft and real warp.
+//
+// DECAY MUST FALL AS THE ENERGY RISES. The strokes blend ADDITIVELY and the zoom echo feeds each
+// frame back into the next, so brightness INTEGRATES: any decay too near 1 and the screen ramps to
+// solid white in a few seconds. Mode 2 pumps in the most light (thicker strokes, bloom, more zoom),
+// so it needs the MOST cooling, not the least.
+per_frame_70=decay = 0.85 - 0.06*q2;
+per_frame_71=zoom = 1.012 + 0.012*q2;
+per_frame_72=warp = 0.9*q2;
+per_frame_73=rot = 0.010*q2*sin(time*0.31);
+per_frame_74=wave_a = 0;
+
+// The updraft: everything the Man burns off rises. (Y-DOWN, so up is negative dy.)
+per_pixel_1=dy = -0.008 * q2;
+// ...and fans outward as it rises, faster near the edges.
+per_pixel_2=dx = (x - 0.5) * 0.010 * q2;
+per_pixel_3=warp = warp * (0.6 + 1.4*rad);
+
+// ======================= THE MAN: two Bezier strokes ======================
+// COLOUR, in three stages:
+//   1. cold      -- white.
+//   2. WARMING   -- as the match score climbs, the Man ramps white -> YELLOW (q12). This is the only
+//                   feedback you get: it says HOW CLOSE you are, never WHAT the pose is. Full yellow
+//                   lands exactly at the ignition threshold, so "gone fully yellow" and "about to
+//                   catch" are the same moment.
+//   3. LIT       -- crossfade (q2) into fire: each stroke cycles red -> orange -> yellow at its OWN
+//                   speed (0.55 and 0.83 Hz), so the two limbs never pulse in lockstep.
+strokecode_0_enabled=1
+strokecode_0_additive=1
+strokecode_0_num_inst=1
+strokecode_0_segments=48
+stroke_0_per_frame1=x0 = pose(JOINT_L_ANKLE,    POSE_X); y0 = pose(JOINT_L_ANKLE,    POSE_Y);
+stroke_0_per_frame2=x1 = pose(JOINT_L_HIP,      POSE_X); y1 = pose(JOINT_L_HIP,      POSE_Y);
+stroke_0_per_frame3=x2 = pose(JOINT_L_SHOULDER, POSE_X); y2 = pose(JOINT_L_SHOULDER, POSE_Y);
+stroke_0_per_frame4=x3 = pose(JOINT_L_WRIST,    POSE_X); y3 = pose(JOINT_L_WRIST,    POSE_Y);
+// The logo's taper: zero width at foot and wrist, fat through the waist. Thickens as it burns.
+stroke_0_per_frame5=w0 = 0; wmid = q1 * (0.28 + 0.18*q2); w1 = 0;
+// A stroke is only as trustworthy as its weakest control joint.
+stroke_0_per_frame6=cf = min(min(pose(JOINT_L_ANKLE,POSE_CONF), pose(JOINT_L_HIP,POSE_CONF)), min(pose(JOINT_L_SHOULDER,POSE_CONF), pose(JOINT_L_WRIST,POSE_CONF)));
+// Fire colour, cycling. Ends of the stroke run hotter than the middle (cyc2, a phase ahead).
+stroke_0_per_frame7=cyc = 0.5 + 0.5*sin(time*0.55); cyc2 = 0.5 + 0.5*sin(time*0.55 + 1.9);
+// The stroke runs FOOT -> WRIST, and it gets hotter along the way: the foot end is deep red (the
+// embers), the wrist end is yellow-white (the flame). Each end cycles on its own phase, so the
+// gradient breathes instead of sitting still.
+stroke_0_per_frame8=fr = 1.0; fg = 0.02 + 0.22*cyc;  fb = 0.0;
+stroke_0_per_frame9=fr2 = 1.0; fg2 = 0.55 + 0.45*cyc2; fb2 = 0.05 + 0.30*cyc2*cyc2;
+// Stage 2: THE TELL, per limb, on a THREE-STOP scale:
+//
+//     WHITE  ---------->  YELLOW  ---------->  RED
+//     wrong               close                really close (about to ignite)
+//
+// Two stops were not enough: yellow arrived as soon as you were roughly symmetric and then sat
+// there, so "close" and "closer" looked identical. Red re-opens the top of the range -- the last
+// stretch, where the score is barely moving, now has a colour of its own.
+//
+// Each END of the stroke reads the limb it belongs to: the FOOT end tracks this leg (q15), the
+// WRIST end tracks this arm (q13). A red hand over a white foot means the arm is dead on and the
+// leg is nowhere -- the figure shows you WHERE you are wrong, limb by limb.
+//   yl = white -> yellow (first 60% of the range), rd = yellow -> red (last 40%).
+stroke_0_per_frame10=yl = min(1, q15/0.6); rd = max(0, (q15-0.6)/0.4);
+stroke_0_per_frame11=wr = 1; wg = (1 - 0.10*yl)*(1 - 0.88*rd); wb = (1 - 0.85*yl)*(1 - 0.90*rd);
+stroke_0_per_frame12=yl2 = min(1, q13/0.6); rd2 = max(0, (q13-0.6)/0.4);
+stroke_0_per_frame13=wr2 = 1; wg2 = (1 - 0.10*yl2)*(1 - 0.88*rd2); wb2 = (1 - 0.85*yl2)*(1 - 0.90*rd2);
+// Stage 3: those warmed colours -> fire, crossfaded by the ignition ramp (q2).
+stroke_0_per_frame14=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2;
+stroke_0_per_frame15=r2 = wr2 + (fr2 - wr2)*q2; g2 = wg2 + (fg2 - wg2)*q2; b2 = wb2 + (fb2 - wb2)*q2;
+// Brighten as the match closes in (q9), and obey the 15 s fade (q8).
+// Alpha ramps too: the foot end is dimmer, so the figure reads as rising out of the dark.
+stroke_0_per_frame16=a2 = cf * q3 * q8 * q9; a = a2 * 0.55;
+
+strokecode_1_enabled=1
+strokecode_1_additive=1
+strokecode_1_num_inst=1
+strokecode_1_segments=48
+stroke_1_per_frame1=x0 = pose(JOINT_R_ANKLE,    POSE_X); y0 = pose(JOINT_R_ANKLE,    POSE_Y);
+stroke_1_per_frame2=x1 = pose(JOINT_R_HIP,      POSE_X); y1 = pose(JOINT_R_HIP,      POSE_Y);
+stroke_1_per_frame3=x2 = pose(JOINT_R_SHOULDER, POSE_X); y2 = pose(JOINT_R_SHOULDER, POSE_Y);
+stroke_1_per_frame4=x3 = pose(JOINT_R_WRIST,    POSE_X); y3 = pose(JOINT_R_WRIST,    POSE_Y);
+stroke_1_per_frame5=w0 = 0; wmid = q1 * (0.28 + 0.18*q2); w1 = 0;
+stroke_1_per_frame6=cf = min(min(pose(JOINT_R_ANKLE,POSE_CONF), pose(JOINT_R_HIP,POSE_CONF)), min(pose(JOINT_R_SHOULDER,POSE_CONF), pose(JOINT_R_WRIST,POSE_CONF)));
+// The other stroke's own cycle speed -- deliberately not a multiple of the first.
+stroke_1_per_frame7=cyc = 0.5 + 0.5*sin(time*0.83); cyc2 = 0.5 + 0.5*sin(time*0.83 + 4.1);
+// The stroke runs FOOT -> WRIST, and it gets hotter along the way: the foot end is deep red (the
+// embers), the wrist end is yellow-white (the flame). Each end cycles on its own phase, so the
+// gradient breathes instead of sitting still.
+stroke_1_per_frame8=fr = 1.0; fg = 0.02 + 0.22*cyc;  fb = 0.0;
+stroke_1_per_frame9=fr2 = 1.0; fg2 = 0.55 + 0.45*cyc2; fb2 = 0.05 + 0.30*cyc2*cyc2;
+stroke_1_per_frame10=yl = min(1, q16/0.6); rd = max(0, (q16-0.6)/0.4);
+stroke_1_per_frame11=wr = 1; wg = (1 - 0.10*yl)*(1 - 0.88*rd); wb = (1 - 0.85*yl)*(1 - 0.90*rd);
+stroke_1_per_frame12=yl2 = min(1, q14/0.6); rd2 = max(0, (q14-0.6)/0.4);
+stroke_1_per_frame13=wr2 = 1; wg2 = (1 - 0.10*yl2)*(1 - 0.88*rd2); wb2 = (1 - 0.85*yl2)*(1 - 0.90*rd2);
+stroke_1_per_frame14=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2;
+stroke_1_per_frame15=r2 = wr2 + (fr2 - wr2)*q2; g2 = wg2 + (fg2 - wg2)*q2; b2 = wb2 + (fb2 - wb2)*q2;
+stroke_1_per_frame16=a2 = cf * q3 * q8 * q9; a = a2 * 0.55;
+
+// ======================= THE DIAMOND HEAD (hollow) ========================
+// One stroke, 4 instances -- `instance` picks which EDGE. Collinear control points make each edge a
+// straight, constant-width line, so this is a real outline (a shape's border can't be: it is a GL
+// LineLoop, and core-profile GL caps glLineWidth at 1).
+//
+// ---- THE HEAD KNOBS ----
+//   hsize: diamond radius as a fraction of your shoulder span.
+//   hdrop: how far the diamond is pulled from JOINT_HEAD down toward the shoulder midpoint
+//          (0 = on the face joint and floating, 1 = sitting on the shoulder line).
+//   hang:  orientation in degrees. The corners live on a circle, so orientation is just a phase
+//          offset: 0 = diamond, 45 = square (flat top). 90 is a no-op -- four-fold symmetry.
+strokecode_2_enabled=1
+strokecode_2_additive=1
+strokecode_2_num_inst=4
+strokecode_2_segments=6
+stroke_2_per_frame1=hsize = 0.6; hdrop = 0.45; hang = 0;
+stroke_2_per_frame2=hx = pose(JOINT_HEAD, POSE_X); hy = pose(JOINT_HEAD, POSE_Y);
+stroke_2_per_frame3=hx = hx + (q6 - hx)*hdrop; hy = hy + (q7 - hy)*hdrop; hr = q1 * hsize; ha = hang*0.0174533;
+stroke_2_per_frame4=e = instance; e2 = e + 1; e2 = if(above(e2, 3), 0, e2);
+// Corner k sits at angle ha + k*90 deg, built in UNIT space -- rotating after the aspect correction
+// below would shear the head instead of turning it. (an1/an2, NOT a1/a2: a2 is the end-alpha.)
+stroke_2_per_frame5=an1 = ha + e *1.5707963; ux = sin(an1); uy = cos(an1);
+stroke_2_per_frame6=an2 = ha + e2*1.5707963; vx = sin(an2); vy = cos(an2);
+// Aspect-corrected corners, or the diamond comes out wide.
+stroke_2_per_frame7=x0 = hx + ux*hr*q5; y0 = hy + uy*hr*q4;
+stroke_2_per_frame8=x3 = hx + vx*hr*q5; y3 = hy + vy*hr*q4;
+// Collinear controls at 1/3 and 2/3 => a straight edge.
+stroke_2_per_frame9=x1 = x0 + (x3-x0)/3; y1 = y0 + (y3-y0)/3;
+stroke_2_per_frame10=x2 = x0 + (x3-x0)*2/3; y2 = y0 + (y3-y0)*2/3;
+stroke_2_per_frame11=hw = q1 * (0.05 + 0.03*q2); w0 = hw; wmid = hw; w1 = hw;
+// The head burns SLOWEST -- it is the last thing to go yellow, so it reads as the beacon.
+stroke_2_per_frame12=cyc = 0.5 + 0.5*sin(time*0.37 + 1.2);
+stroke_2_per_frame13=fr = 1.0; fg = 0.25 + 0.70*cyc; fb = 0.03 + 0.12*cyc*cyc;
+stroke_2_per_frame14=yl = min(1, q12/0.6); rd = max(0, (q12-0.6)/0.4); wr = 1; wg = (1 - 0.10*yl)*(1 - 0.88*rd); wb = (1 - 0.85*yl)*(1 - 0.90*rd);
+stroke_2_per_frame15=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2; r2 = r; g2 = g; b2 = b;
+stroke_2_per_frame16=a = pose(JOINT_HEAD, POSE_CONF) * q3 * q8 * q9; a2 = a;
+
+warp_1=`shader_body
+warp_2=`{
+warp_3=`    // MODE 1: carry the frame straight through -- the engine's zoom gives the small echo.
+warp_4=`    // MODE 2 (q2): the flame licks. A slow noise field bends the trails sideways as they rise,
+warp_5=`    // which is what turns clean strokes into fire rather than motion blur.
+warp_6=`    float n_ = tex2D(sampler_noise_lq, uv*1.7 + float2(time*0.03, -time*0.11)).x - 0.5;
+warp_7=`    float2 d_ = float2(n_ * 0.010 * q2, -0.0015 * q2);
+warp_8=`    ret = tex2D(sampler_main, uv + d_).xyz;
+warp_9=`    // Cool on every pass -- HARDER when lit. This is the second brake on the additive feedback
+warp_10=`    // loop (decay is the first): without it the zoom echo compounds and the screen goes white.
+warp_11=`    ret *= 0.95 + 0.03*q11;
+warp_12=`}
+comp_1=`shader_body
+comp_2=`{
+comp_3=`    float3 c_ = GetPixel(uv);
+comp_4=`    // Bloom, so the hot parts actually read as fire. Cold mode gets a touch for the glow.
+comp_5=`    float3 b_ = (GetBlur1(uv) + GetBlur2(uv)) * 0.5;
+comp_6=`    ret = c_ + b_*b_ * (0.35 + 1.15*q2);
+comp_7=`}
