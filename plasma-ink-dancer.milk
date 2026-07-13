@@ -1,0 +1,586 @@
+// PLASMA INK (SEE THE DANCER) -- plasma-ink.milk, but the performer is a PERSON, not a silhouette.
+//
+// The sibling preset treats the dancer as a shape in the composite; this one puts the camera image
+// itself on the screen at full opacity, with a hardened matte, sandwiched: the fluid ripples BEHIND
+// them, they occlude it completely, and the bolts strike IN FRONT of the hands holding them. The only
+// difference between the two files is the dancer block in the comp shader -- everything else (the
+// fluid, the three bolts, the black bar, the energy channel) is identical.
+//
+// ---------------------------------------------------------------------------------------------
+//
+// The background is the reaction-diffusion field from `Reaction/Liquid Ripples/various artists -
+// 1200773722127.milk`, unchanged: a self-advecting ink that flows down its own blurred gradient and
+// sharpens as it goes, which is what gives it those marbled ripples.
+//
+// That preset has exactly ONE source of disruption -- its base waveform, parked at (0.85, 0.61), a
+// scribble in the corner that the fluid then eats and smears across the frame. Without it the ink
+// settles and the screen goes still. THAT WAVE IS GONE. The disruption is now the plasma ball held
+// between the dancer's hands: it burns ink into the fluid along its arcs, and stirs the fluid it has
+// burnt. The scribble in the corner has become the performer.
+//
+// Requires: a Video Pose Model (the hands) and Video Mask = seg (the dancer's cutout).
+//
+// ---------------------------------------------------------------------------------------------
+// ONE BUFFER, TWO SIMULATIONS. The main pattern buffer is RGBA16F, and the two live in different
+// channels -- they share the frame but never touch:
+//
+//   RGB   = the INK. Liquid Ripples' field (concentration in .y, its edge signal in .z). The
+//           plasma NEVER emits light into it: colour here is data, and lighting it would poison the
+//           solver that reads it back next frame.
+//   ALPHA = the ENERGY. A free per-pixel float (see TASK_float_pattern_buffer.md) that advects with
+//           the pixels and is read by both shaders (GetState). The wave writes it (`av`); the warp
+//           decays it; the comp is the only thing that ever turns it into light.
+//
+// So the wave does two jobs at once with its two alphas: its DRAW alpha (`a`) paints ink into the
+// fluid -- that is the disruption, exactly what the old corner waveform did -- and its STATE alpha
+// (`av`) lays down the energy the bolts are drawn from.
+// ---------------------------------------------------------------------------------------------
+MILKDROP_PRESET_VERSION=201
+PSVERSION=2
+PSVERSION_WARP=2
+PSVERSION_COMP=2
+[preset00]
+fRating=3.0
+fGammaAdj=1.25959611981
+fDecay=0.9707092528
+fVideoEchoZoom=1.00742930471
+fVideoEchoAlpha=0.4803817245
+nVideoEchoOrientation=0
+// THE CORNER WAVE, REMOVED. It was the fluid's only stirrer; the ball is its replacement.
+fWaveEnable=0
+fWaveAlpha=0
+wave_a=0
+nWaveMode=0
+bAdditiveWaves=0
+bWaveDots=0
+bWaveThick=1
+// The ink WRAPS -- it flows off one edge and back in the other. This is Liquid Ripples' behaviour and
+// the shader's floor()-wrapped sampling depends on it.
+bTexWrap=1
+bDarkenCenter=0
+fWarpAnimSpeed=0.33990786532
+fWarpScale=33.7864266264
+fZoomExponent=1.41047440876
+fShader=0.195224611
+zoom=1
+rot=0
+warp=0
+cx=0.5
+cy=0.5
+sx=1
+sy=1
+ob_size=0
+ob_a=0
+ib_size=0
+ib_a=0
+b1n=0
+b2n=0
+b3n=0
+b1x=1
+b2x=1
+b3x=1
+b1ed=0.0911365854
+// The energy channel starts empty, or frame one is a full-screen flash.
+fAlphaInit=0.0
+bAlphaCarryover=0
+
+// The ink is a SIMULATION: it must not be zoomed, warped or decayed underneath itself, or the solver
+// is integrating a moving target. Liquid Ripples pins all three, and so do we.
+per_frame_1=decay = 1; zoom = 1; warp = 0; wrap = 1;
+// The dancer, cut out by the seg matte (mode 0 = Source alpha = the person mask the app supplies).
+per_frame_2=video_alpha_mode = 0; video_alpha_value = 1.0; video_alpha_init = 0.0;
+
+// ======================= THE BALL'S FRAME =================================
+// (Identical to plasma-ball.milk -- see that preset for the full derivation.)
+//
+// Everything is measured in "y-units": screen-normalized, x pre-multiplied by the screen aspect, so
+// a distance means the same thing in both directions and a circle is round.
+per_frame_3=asp = aspecty / max(aspectx, 0.0001); q8 = asp;
+per_frame_4=q9 = 1/aspectx; q10 = 1/aspecty;
+
+// POSE Y IS BOTTOM-UP; shaders are Y-DOWN. Flip once, here.
+per_frame_5=lhx = pose(JOINT_L_HAND, POSE_X); lhy = 1 - pose(JOINT_L_HAND, POSE_Y);
+per_frame_6=rhx = pose(JOINT_R_HAND, POSE_X); rhy = 1 - pose(JOINT_R_HAND, POSE_Y);
+per_frame_7=cf = min(pose(JOINT_L_HAND, POSE_CONF), pose(JOINT_R_HAND, POSE_CONF)) * pose_valid;
+per_frame_8=dt = 1/max(fps, 1); gate = min(1, max(0, (cf - 0.15)/0.30));
+per_frame_9=cg = cg + (gate - cg) * min(1, dt/0.15); q13 = cg;
+
+// Sized off the SHOULDER SPAN, so the ball is the same ball near the camera or far from it.
+per_frame_10=lsx = pose(JOINT_L_SHOULDER, POSE_X); lsy = 1 - pose(JOINT_L_SHOULDER, POSE_Y);
+per_frame_11=rsx = pose(JOINT_R_SHOULDER, POSE_X); rsy = 1 - pose(JOINT_R_SHOULDER, POSE_Y);
+per_frame_12=sdx = (lsx - rsx)*asp; sdy = lsy - rsy;
+per_frame_13=bs = sqrt(sdx*sdx + sdy*sdy); bs = max(0.06, min(0.45, bs));
+per_frame_14=BALLR = 0.42; SQUASH = 0.80;
+per_frame_15=r0 = BALLR * bs;
+
+per_frame_16=hdx = (lhx - rhx)*asp; hdy = lhy - rhy;
+per_frame_17=d = sqrt(hdx*hdx + hdy*hdy);
+per_frame_18=q3 = if(above(d, 0.01), hdx/d, 1); q4 = if(above(d, 0.01), hdy/d, 0);
+per_frame_19=q1 = (lhx + rhx)*0.5; q2 = (lhy + rhy)*0.5;
+// Contained by the hands: aa -> r0 with the hands closed (a sphere), aa -> d/2 as they part (poles
+// land ON the palms). bb shrinks as aa grows, so the ball is round when small and skinny when pulled.
+per_frame_20=q5 = sqrt(0.25*d*d + r0*r0);
+per_frame_21=q6 = r0 * pow(r0 / max(q5, 0.0001), SQUASH);
+// Half the hand separation, in y-units: the warp needs the hands THEMSELVES (not just the ball that
+// hangs between them) to know where the black line starts and stops. The hands sit at the centre
+// (q1,q2) plus and minus this along the axis (q3,q4).
+per_frame_30=q16 = 0.5*d;
+
+// ======================= ENERGY ===========================================
+per_frame_22=sq = min(2.5, q5 / max(r0, 0.0001));
+per_frame_23=q7 = cg * (0.45 + 0.40*bass_att + 0.15*treb_att) * (0.75 + 0.35*sq);
+per_frame_24=q11 = time * 1.7;
+per_frame_25=q12 = cg * max(0, bass - 1.15) * 0.9;
+
+// THE WAKE. The hands do not just hold the ball, they DRAG the fluid: the mean hand velocity is
+// handed to the warp, which pushes the ink along with it. This is the coupling with the biggest
+// reach -- a swung arm shoves a whole region of the pattern, so the dancer can move the fluid at the
+// scale the fluid's own structures live at, instead of only tickling it from inside the ball.
+// POSE_VY is bottom-up like POSE_Y, so negate it for the shaders' y-down world.
+per_frame_26=hvx = (pose(JOINT_L_HAND, POSE_VX) + pose(JOINT_R_HAND, POSE_VX)) * 0.5;
+per_frame_27=hvy = (pose(JOINT_L_HAND, POSE_VY) + pose(JOINT_R_HAND, POSE_VY)) * 0.5;
+// Clamped: the tracker occasionally spits a huge velocity on a re-acquire, and an unclamped one
+// would tear the fluid apart in a single frame.
+per_frame_28=hv = sqrt(hvx*hvx + hvy*hvy); hs = min(1, hv/1.5) / max(hv, 0.0001);
+per_frame_29=q14 = cg * hvx * hs * asp; q15 = cg * -hvy * hs;
+
+// ======================= TWO MORE ARCS: THE BODY IS WIRED =================
+// The ball between the hands is one bolt out of three. The other two run FOOT -> HEAD, one up each
+// side of the body, so the dancer is not holding the energy so much as conducting it: the ground
+// through the legs, up to the head, and out across the hands.
+//
+// A bolt is nothing but TWO ENDPOINTS AND A THICKNESS -- the filament maths below neither knows nor
+// cares which joints it is strung between. So each arc just parks its own frame in six q-vars and the
+// same wave code runs three times:
+//
+//   arc          centre      axis        semi-axes    energy     drawn by
+//   hands        q1,q2       q3,q4       q5,q6        q7         wavecode_0   (+ the black bar, the
+//                                                                              swirl and the core --
+//                                                                              those stay hand-only)
+//   L foot-head  q17,q18     q19,q20     q21,q22      q23        wavecode_1
+//   R foot-head  q24,q25     q26,q27     q28,q29      q30        wavecode_2
+//
+// The leg arcs are LONG, so the same area-preserving squeeze that fattens the ball when the hands
+// close makes these come out as thin, taut spindles: a wire up the body, not a sausage.
+
+// ---- arc 1: LEFT ANKLE -> HEAD ----
+per_frame_31=ax_ = pose(JOINT_L_ANKLE, POSE_X); ay_ = 1 - pose(JOINT_L_ANKLE, POSE_Y);
+per_frame_32=bx_ = pose(JOINT_HEAD, POSE_X);    by_ = 1 - pose(JOINT_HEAD, POSE_Y);
+per_frame_33=q17 = (ax_ + bx_)*0.5; q18 = (ay_ + by_)*0.5;
+per_frame_34=ex_ = (ax_ - bx_)*asp; ey_ = ay_ - by_; el_ = sqrt(ex_*ex_ + ey_*ey_);
+per_frame_35=q19 = if(above(el_, 0.01), ex_/el_, 0); q20 = if(above(el_, 0.01), ey_/el_, 1);
+// LIMBFAT_: the squeeze law is unforgiving to a long bolt -- a foot-to-head arc is so much longer
+// than the ball is wide that area-preservation shaves its cross-section down to a hair, and a hair is
+// what it looked like. The limbs get their thickness back by a flat multiplier, which keeps the
+// SHAPE (still visibly a taut spindle, still thinning as it lengthens) while giving it enough width
+// to carry real light.
+per_frame_36=LIMBFAT_ = 1.5;
+per_frame_37=q21 = sqrt(0.25*el_*el_ + r0*r0); q22 = LIMBFAT_ * r0 * pow(r0 / max(q21, 0.0001), SQUASH);
+// A bolt is only as trustworthy as its weakest endpoint -- the ankles are the least reliable joints
+// the tracker has, so this fades out honestly when the feet leave the frame.
+per_frame_38=cfa = min(pose(JOINT_L_ANKLE, POSE_CONF), pose(JOINT_HEAD, POSE_CONF)) * pose_valid;
+per_frame_39=ga = min(1, max(0, (cfa - 0.15)/0.30)); sqa = min(2.5, q21 / max(r0, 0.0001));
+// LIMB_: the body bolts' brightness -- and their MASTER SWITCH.
+//
+// PARKED AT 0: the foot-to-head bolts are OFF for now, pending fine-tuning. Nothing is deleted.
+// LIMB_ = 0 zeroes q23 and q30, and every limb term downstream is multiplied by one of those, so the
+// waves draw nothing, burn no ink, and their cores and flows drop out of the warp. One knob kills the
+// whole feature.
+//
+// TO BRING THEM BACK: set LIMB_ = 0.95 (a shade under the ball -- the hands are the performance,
+// these are the current feeding it) AND re-enable wavecode_1_enabled / wavecode_2_enabled below,
+// which are 0 so the two silent waves do not cost 1024 per-point evals a frame for nothing.
+per_frame_40=LIMB_ = 0;
+per_frame_41=q23 = LIMB_ * ga * (0.45 + 0.40*bass_att + 0.15*treb_att) * (0.75 + 0.35*sqa);
+
+// ---- arc 2: RIGHT ANKLE -> HEAD ----
+per_frame_42=ax_ = pose(JOINT_R_ANKLE, POSE_X); ay_ = 1 - pose(JOINT_R_ANKLE, POSE_Y);
+per_frame_43=q24 = (ax_ + bx_)*0.5; q25 = (ay_ + by_)*0.5;
+per_frame_44=ex_ = (ax_ - bx_)*asp; ey_ = ay_ - by_; el_ = sqrt(ex_*ex_ + ey_*ey_);
+per_frame_45=q26 = if(above(el_, 0.01), ex_/el_, 0); q27 = if(above(el_, 0.01), ey_/el_, 1);
+per_frame_46=q28 = sqrt(0.25*el_*el_ + r0*r0); q29 = LIMBFAT_ * r0 * pow(r0 / max(q28, 0.0001), SQUASH);
+per_frame_47=cfb = min(pose(JOINT_R_ANKLE, POSE_CONF), pose(JOINT_HEAD, POSE_CONF)) * pose_valid;
+per_frame_48=gb = min(1, max(0, (cfb - 0.15)/0.30)); sqb = min(2.5, q28 / max(r0, 0.0001));
+per_frame_49=q30 = LIMB_ * gb * (0.45 + 0.40*bass_att + 0.15*treb_att) * (0.75 + 0.35*sqb);
+
+// ======================= THE FILAMENTS ====================================
+// 16 filaments x 32 points, each a helix wound around the hand axis and seen in projection, so they
+// weave and cross with no 3D anywhere. See plasma-ball.milk for the derivation of every line.
+//
+// THE ONE DIFFERENCE, and it is the whole point of this preset: `a` is no longer 0. In plasma-ball
+// the wave painted no colour at all -- it was a stylus for the alpha channel and nothing else. Here
+// it ALSO paints ink (a = INK_, a pale wave colour), and that ink is what the fluid grabs, pulls
+// apart and marbles across the frame. The arcs are the pen; the ripples are what the ink does next.
+wavecode_0_enabled=1
+wavecode_0_samples=512
+wavecode_0_bSpectrum=0
+wavecode_0_bUseDots=0
+wavecode_0_bDrawThick=1
+// NOT additive: the ink field is a concentration, not a light. Additive drawing would let a bolt that
+// lingers integrate to infinity and burn a permanent white hole in the fluid.
+wavecode_0_bAdditive=0
+wavecode_0_scaling=1.0
+wavecode_0_smoothing=0.0
+// WHICH COLOUR FEEDS THE FLUID? Only GREEN. The solver reads .y and nothing else -- and the warp
+// writes back only .y and .z, so RED is zeroed every frame and BLUE is overwritten by the edge
+// signal. Green is the sole channel the ink can survive in.
+//
+// So the wave's green is pinned at 1.0: it is not a colour choice at all, it is the CONCENTRATION of
+// the ink being injected, and anything less is simply a weaker dose. (The original's pale pink
+// wave_g = 0.70 was quietly throwing away 30% of its own feed.) White would work for the same reason
+// -- its green is 1 -- but only its green was ever doing anything.
+//
+// Red and blue are then free, and they cost nothing: they show for the ONE frame the wave is drawn,
+// before the warp wipes them, so they read as a faint cold flash along a striking arc. Tinted to
+// match the bolts.
+wavecode_0_r=0.35
+wavecode_0_g=1.00
+wavecode_0_b=0.80
+wavecode_0_a=0.35
+wave_0_per_point1=k = floor(sample*511); f = floor(k/32); s = (k - f*32)/31;
+wave_0_per_point2=t = 2*s - 1; u = t * q5;
+wave_0_per_point3=rr = q6 * sqrt(max(0, 1 - t*t));
+wave_0_per_point4=TWIST = 2.6; th = f*0.3926991 + q11 + TWIST*t;
+wave_0_per_point5=off = rr * cos(th) * (1 + 0.30*value1);
+// The kink: a fixed-per-point hash (each filament keeps its own jagged identity down its length) plus
+// a slow one that re-rolls a few times a second -- the arc re-striking down a different channel.
+wave_0_per_point6=hs = sin(k*12.9898 + f*78.233)*43758.5453; hs = hs - floor(hs);
+wave_0_per_point7=hz = sin(k*39.3468 + f*11.135 + floor(time*9)*7.77)*24634.6345; hz = hz - floor(hz);
+wave_0_per_point8=KINK1 = 0.55; KINK2 = 0.30;
+wave_0_per_point9=jag = (KINK1*(hs - 0.5) + KINK2*(hz - 0.5)) * rr * 2;
+wave_0_per_point10=px = q1 + ((u + jag*0.6)*q3 + (off + jag*0.5)*(-q4)) / q8; py = q2 + (u + jag*0.6)*q4 + (off + jag*0.5)*q3;
+wave_0_per_point11=dep = 0.55 + 0.45*sin(th);
+// STRIKE: each filament fires and dies on its own clock, cubed so it is dark most of the time.
+wave_0_per_point12=st = 0.5 + 0.5*sin(time*(5 + 4*f*0.13) + f*2.399); st = st*st*st;
+wave_0_per_point13=en = q7 * dep * (0.25 + 0.75*st) * (0.60 + 0.40*abs(value1));
+// TWO ALPHAS, TWO JOBS.
+//   av = the ENERGY the comp draws bolts from (state channel).
+//   a  = the INK the fluid eats (draw alpha). Scaled by the same energy, so a filament that is not
+//        currently striking leaves no ink either -- the ball only writes when it is alight.
+wave_0_per_point14=av = en; INK_ = 0.85; a = INK_ * min(1, en*1.4);
+// Green pinned at 1: this is the ink's CONCENTRATION, not its colour (see the wavecode_0_g note).
+wave_0_per_point15=r = 0.35; g = 1.00; b = 0.80;
+// FLIP Y BACK: the ball is built in the shaders' space (uv.y = 0 at the TOP); a wave's output space
+// is the other way up. Mirror the finished point about y = 0.5 and the two agree.
+wave_0_per_point16=x = 0.5 + (px - 0.5)*q9; y = 0.5 + (0.5 - py)*q10;
+
+// ---- BOLT 2: LEFT ANKLE -> HEAD -----------------------------------------
+// The same code, pointed at a different pair of joints (q17..q23 instead of q1..q7). Two changes
+// that are not just re-indexing:
+//   * 8 filaments of 64 points, not 16 of 32. A foot-to-head bolt is three times as long as the
+//     ball is wide: with 32 points per filament the segments would be visibly straight, and the
+//     jagged path -- which is the whole reason it reads as lightning -- would smooth out into a
+//     polyline. Same 512 points, spent on LENGTH instead of on count.
+//   * every hash and clock is offset (the +17 / *0.8 / +1.1 terms), so the three bolts never strike
+//     in unison. Three identical cages firing together would read as one object with three parts.
+wavecode_1_enabled=0
+wavecode_1_samples=512
+wavecode_1_bSpectrum=0
+wavecode_1_bUseDots=0
+wavecode_1_bDrawThick=1
+wavecode_1_bAdditive=0
+wavecode_1_scaling=1.0
+wavecode_1_smoothing=0.0
+wavecode_1_r=0.35
+wavecode_1_g=1.00
+wavecode_1_b=0.80
+wavecode_1_a=0.35
+wave_1_per_point1=k = floor(sample*511); f = floor(k/64); s = (k - f*64)/63;
+wave_1_per_point2=t = 2*s - 1; u = t * q21;
+wave_1_per_point3=rr = q22 * sqrt(max(0, 1 - t*t));
+wave_1_per_point4=TWIST = 2.6; th = f*0.7853982 + q11*0.8 + TWIST*t;
+wave_1_per_point5=off = rr * cos(th) * (1 + 0.30*value1);
+wave_1_per_point6=hs = sin(k*12.9898 + f*78.233 + 17.0)*43758.5453; hs = hs - floor(hs);
+wave_1_per_point7=hz = sin(k*39.3468 + f*11.135 + 17.0 + floor(time*9 + 1)*7.77)*24634.6345; hz = hz - floor(hz);
+wave_1_per_point8=KINK1 = 0.55; KINK2 = 0.30;
+wave_1_per_point9=jag = (KINK1*(hs - 0.5) + KINK2*(hz - 0.5)) * rr * 2;
+wave_1_per_point10=px = q17 + ((u + jag*0.6)*q19 + (off + jag*0.5)*(-q20)) / q8; py = q18 + (u + jag*0.6)*q20 + (off + jag*0.5)*q19;
+wave_1_per_point11=dep = 0.55 + 0.45*sin(th);
+wave_1_per_point12=st = 0.5 + 0.5*sin(time*(4.3 + 4*f*0.13) + f*2.399 + 1.1); st = st*st*st;
+wave_1_per_point13=en = q23 * dep * (0.25 + 0.75*st) * (0.60 + 0.40*abs(value1));
+wave_1_per_point14=av = en; INK_ = 0.85; a = INK_ * min(1, en*1.4);
+wave_1_per_point15=r = 0.35; g = 1.00; b = 0.80;
+wave_1_per_point16=x = 0.5 + (px - 0.5)*q9; y = 0.5 + (0.5 - py)*q10;
+
+// ---- BOLT 3: RIGHT ANKLE -> HEAD ----------------------------------------
+// As bolt 2, on q24..q30, with its own offsets again (+43, *1.15, +2.7).
+wavecode_2_enabled=0
+wavecode_2_samples=512
+wavecode_2_bSpectrum=0
+wavecode_2_bUseDots=0
+wavecode_2_bDrawThick=1
+wavecode_2_bAdditive=0
+wavecode_2_scaling=1.0
+wavecode_2_smoothing=0.0
+wavecode_2_r=0.35
+wavecode_2_g=1.00
+wavecode_2_b=0.80
+wavecode_2_a=0.35
+wave_2_per_point1=k = floor(sample*511); f = floor(k/64); s = (k - f*64)/63;
+wave_2_per_point2=t = 2*s - 1; u = t * q28;
+wave_2_per_point3=rr = q29 * sqrt(max(0, 1 - t*t));
+wave_2_per_point4=TWIST = 2.6; th = f*0.7853982 + q11*1.15 + TWIST*t;
+wave_2_per_point5=off = rr * cos(th) * (1 + 0.30*value1);
+wave_2_per_point6=hs = sin(k*12.9898 + f*78.233 + 43.0)*43758.5453; hs = hs - floor(hs);
+wave_2_per_point7=hz = sin(k*39.3468 + f*11.135 + 43.0 + floor(time*9 + 2)*7.77)*24634.6345; hz = hz - floor(hz);
+wave_2_per_point8=KINK1 = 0.55; KINK2 = 0.30;
+wave_2_per_point9=jag = (KINK1*(hs - 0.5) + KINK2*(hz - 0.5)) * rr * 2;
+wave_2_per_point10=px = q24 + ((u + jag*0.6)*q26 + (off + jag*0.5)*(-q27)) / q8; py = q25 + (u + jag*0.6)*q27 + (off + jag*0.5)*q26;
+wave_2_per_point11=dep = 0.55 + 0.45*sin(th);
+wave_2_per_point12=st = 0.5 + 0.5*sin(time*(5.7 + 4*f*0.13) + f*2.399 + 2.7); st = st*st*st;
+wave_2_per_point13=en = q30 * dep * (0.25 + 0.75*st) * (0.60 + 0.40*abs(value1));
+wave_2_per_point14=av = en; INK_ = 0.85; a = INK_ * min(1, en*1.4);
+wave_2_per_point15=r = 0.35; g = 1.00; b = 0.80;
+wave_2_per_point16=x = 0.5 + (px - 0.5)*q9; y = 0.5 + (0.5 - py)*q10;
+
+// ======================= WARP: the fluid ==================================
+warp_1=```
+shader_body
+{
+    // ---- LIQUID RIPPLES' SOLVER ------------------------------------------------------------
+    // The ink advects down the gradient of its own blurred self (a Sobel of GetBlur2), then sharpens:
+    // the (ret.y - blur) term is an unsharp mask fed back every frame, which is what grows the fine
+    // filigree instead of letting diffusion smooth it into mush.
+    float1 d = 0.024;
+    float1 dx = ( GetBlur2(uv + float2(d,0)) - GetBlur2(uv-float2(d,0)) ).y*1280*texsize.z;
+    float1 dy = ( GetBlur2(uv + float2(0,d)) - GetBlur2(uv-float2(0,d)) ).y*1024*texsize.w;
+    float2 my_uv = uv - float2(dx,dy)*0.05;
+
+    // ---- THE BALL STIRS IT -----------------------------------------------------------------
+    // The ball is not just a source, it is an OBSTACLE with a current around it: a swirl about the
+    // hand axis and a pull inward, both dying off with distance. The ink it lays down is immediately
+    // wound into a vortex rather than sitting where it was drawn.
+    float  asp_ = texsize.x / texsize.y;
+    float2 c_   = float2(q1, q2);
+    float2 ax_  = float2(q3, q4);
+    float2 pp_  = float2(-q4, q3);
+    float2 p_   = (uv - c_) * float2(asp_, 1.0);
+    float  sa_  = dot(p_, ax_);
+    float  sb_  = dot(p_, pp_);
+
+    // Elliptical distance in the SQUEEZED frame: 1.0 on the ball's surface. Everything below is
+    // shaped by the ball without knowing anything about its geometry.
+    float e_    = length(float2(sa_ / max(q5, 0.0001), sb_ / max(q6, 0.0001)));
+    float fall_ = saturate(1.0 - e_);
+
+    // The ball's influence dies off within about a ball-width: it stirs the ink it is touching and
+    // nothing else. The fluid's large-scale life is the fluid's own (see the solver below).
+    float  near_  = exp(-e_ * e_ * 0.9) * q7;
+
+    // MIND THE SIGN: sampling old[uv + flow] moves CONTENT by -flow. So the tangential term winds the
+    // ink around the hand axis, and the -p_ term (pointing back at the ball) pushes it gently OUTWARD
+    // -- the ball is a source, and this is its outflow.
+    float  SWIRL_ = 0.040;
+    float  PUSH_  = 0.030;
+    float2 tang_  = float2(-p_.y, p_.x);
+    float2 flow_  = (tang_ * SWIRL_ - p_ * PUSH_) * near_;
+
+    // THE WAKE: the hands DRAG the fluid they are touching. Sampling from behind the motion carries
+    // the ink along with them, so a swung arm pulls a streak of it. Local, like everything else the
+    // ball does -- it is a hand in the water, not a current.
+    float  WAKE_ = 0.055;
+    float2 wake_ = float2(q14, q15) * WAKE_ * exp(-e_ * e_ * 0.5) * q13;
+    flow_ -= wake_;
+
+    // ---- THE LIMB ARCS: A LIGHTER TOUCH ------------------------------------------------------
+    // The two foot-to-head bolts were WAVE-only: they glowed and they burnt ink, but the fluid did
+    // not know they were there. They get the shader treatment now -- but a fraction of it. They are
+    // the current, not the performance:
+    //
+    //   core   at LIMBCORE_ (vs the ball's 0.22): enough body that the arc is a bolt with substance
+    //          rather than a bundle of wires, but it never becomes a second ball.
+    //   flow   at LIMBFLOW_ of the ball's swirl and push: the fluid parts around them and they trail
+    //          ink up the body, but they do not fight the ball for control of the pattern.
+    //   bar    NONE. Three black bars would carve the frame into pieces; the wedge is the ball's.
+    //   wake   NONE. Feet swing far faster than hands and would tear the fluid apart.
+    float LIMBCORE_ = 0.11;
+    float LIMBFLOW_ = 0.40;
+
+    float2 c1_ = float2(q17, q18);
+    float2 a1_ = float2(q19, q20);
+    float2 p1_ = (uv - c1_) * float2(asp_, 1.0);
+    float  e1_ = length(float2(dot(p1_, a1_) / max(q21, 0.0001),
+                               dot(p1_, float2(-q20, q19)) / max(q22, 0.0001)));
+    float  n1_ = exp(-e1_ * e1_ * 0.9) * q23;
+    flow_ += (float2(-p1_.y, p1_.x) * SWIRL_ - p1_ * PUSH_) * n1_ * LIMBFLOW_;
+
+    float2 c2_ = float2(q24, q25);
+    float2 a2_ = float2(q26, q27);
+    float2 p2_ = (uv - c2_) * float2(asp_, 1.0);
+    float  e2_ = length(float2(dot(p2_, a2_) / max(q28, 0.0001),
+                               dot(p2_, float2(-q27, q26)) / max(q29, 0.0001)));
+    float  n2_ = exp(-e2_ * e2_ * 0.9) * q30;
+    flow_ += (float2(-p2_.y, p2_.x) * SWIRL_ - p2_ * PUSH_) * n2_ * LIMBFLOW_;
+
+    // ---- THE BLACK LINE -- a bar between the hands ------------------------------------------
+    // Distance to the SEGMENT joining the two hands. The hands are at the centre +/- q16 along the
+    // axis, so inside that span the distance is simply how far across the axis we are (|sb_|), and
+    // past each end it is the distance to that endpoint. (An infinite line would cut the fluid in
+    // half across the whole frame; this one stops at the palms.)
+    float over_ = abs(sa_) - q16;
+    float dl_   = (over_ <= 0.0) ? abs(sb_) : length(float2(over_, sb_));
+
+    // THE SPLIT. A line has a SIDE, and that is the whole point of it: the ink on each face is pushed
+    // away, perpendicular, so the fluid moves OFF the bar in two opposing sheets instead of spiralling
+    // through the middle of the ball. The bar is a wedge driven into the pattern, and the two halves
+    // of the frame are shoved apart along it.
+    //
+    // (Sign, again: displacement is -flow, so flow of -pp_*side_ moves the ink along +pp_*side_ --
+    // away from the line on whichever side it is already on.)
+    float  SPLIT_ = 0.030;
+    float  side_  = (sb_ >= 0.0) ? 1.0 : -1.0;
+    float  band_  = exp(-(dl_ / 0.07) * (dl_ / 0.07));   // only the fluid near the bar feels it
+    flow_ -= pp_ * (side_ * SPLIT_ * band_ * q13);
+
+    my_uv += float2(flow_.x / asp_, flow_.y);
+
+    // ---- THE ENERGY CHANNEL, read first (the solver below is coupled to it) ----------------
+    // Carried along the SAME flow as the ink, so a dying arc's afterglow drifts with the ripple it
+    // created instead of hanging in the air over it.
+    //
+    // No light is emitted into RGB here -- that is the comp's job. RGB is the solver's data, and
+    // painting into it would feed light back into the chemistry.
+    float st_ = tex2D(sampler_main, my_uv - floor(my_uv)).a;
+
+    // The ball's core, plus the two limb arcs' lighter ones. All three land in the SAME state
+    // channel, so the comp draws them with one ramp and never has to know there are three of them.
+    float CORE_ = 0.22;
+    float core_ = pow(fall_, 6.0) * q7 * CORE_
+                + pow(saturate(1.0 - e1_), 6.0) * q23 * LIMBCORE_
+                + pow(saturate(1.0 - e2_), 6.0) * q30 * LIMBCORE_;
+    float DECAY_A_ = 0.72;
+    float fld_ = max(core_, st_ * DECAY_A_);
+    ret_a = fld_;
+
+    // ---- THE INK: Liquid Ripples' chemistry, UNCHANGED --------------------------------------
+    // These three numbers ARE the background pattern's behaviour, and they are the original's:
+    //   FEED_ 0.02  a flat source -- ink wells up everywhere, every frame, whether or not anyone is
+    //               dancing. This is what grows the big marbled structures on its own, and it is why
+    //               the field has a life independent of the ball.
+    //   RATE_ 0.1   the unsharp gain: how hard the ink sharpens itself into filigree.
+    //   BIAS_ 0.1   the erosion threshold: ink below its own blur by this much is eaten.
+    //
+    // (Starving FEED_ and dropping BIAS_ makes the ball the sole author of the pattern -- the fluid
+    // then only does what the dancer tells it to. That was a different preset, and it is one line
+    // away: FEED_ 0.004, BURN_ 0.14, BIAS_ 0.055, RATE_ 0.15.)
+    float FEED_ = 0.02;
+    float RATE_ = 0.1;
+    float BIAS_ = 0.1;
+
+    // The ball's ink, ON TOP of the fluid's own. It is the corner waveform's replacement: a source
+    // the fluid then eats and smears, not a rewrite of the chemistry.
+    float BURN_ = 0.10;
+
+    ret.y = tex2D( sampler_fc_main, my_uv - floor(my_uv)).y;
+    ret.y += (ret.y - GetBlur1(my_uv - floor(my_uv)).y - BIAS_) * RATE_ + FEED_ + BURN_ * fld_;
+
+    // ...AND THE BAR IS BURNT IN, HARD. Written straight into the ink field, so it is SOLID in the
+    // main texture -- not drawn over it in the comp, which would be a decal the fluid never saw.
+    // The solver reads this back next frame and finds a razor edge with nothing on the other side,
+    // and an edge is precisely what its unsharp term amplifies: the bar does not merely sit in the
+    // pattern, it MAGNIFIES the disturbance, ink piling up along both faces of a hole that keeps
+    // being re-cut every frame.
+    //
+    // It goes in AFTER the chemistry (so this frame's feed cannot fill it back in) and BEFORE the .z
+    // change signal (so the bar registers as motion, and the comp's blue picks out its edges).
+    float LINEW_ = 0.012;
+    float SOFT_  = 0.004;
+    float bar_   = (1.0 - smoothstep(LINEW_, LINEW_ + SOFT_, dl_)) * q13;
+    ret.y *= 1.0 - bar_;
+
+    ret.z = (tex2D(sampler_main, uv_orig).y - ret.y)*4 + 0.5;
+}
+```
+
+// ======================= COMP: ink, dancer, bolts =========================
+comp_1=```
+shader_body
+{
+    float4 m_ = tex2D(sampler_main, uv);
+
+    // THE INK IS GREEN; THE BLUE IS ONLY ITS MOTION.
+    //
+    // Liquid Ripples displayed the buffer raw, and that is where the "static blue" came from: .z is
+    // the solver's CHANGE signal, (previous_ink - new_ink)*4 + 0.5, and that +0.5 baseline means a
+    // patch of ink which has stopped moving reads as a flat mid-blue -- across the entire frame. The
+    // blue was never a colour in the pattern, it was the colour of nothing happening, and it drowned
+    // the green wherever the fluid settled.
+    //
+    // So the baseline is subtracted out: blue now appears ONLY where the ink is actively changing --
+    // the moving fronts, the arcs' wake, the boil around the ball -- and decays to black the moment a
+    // region goes still. Green (the ink itself) is what fills the frame, and the blue rides on it as
+    // a highlight of what is alive right now. Nothing reads .z but this line, so it is free to mean
+    // whatever is most useful.
+    float ink_ = saturate(m_.y);
+    float chg_ = saturate(abs(m_.z - 0.5) * 3.0);
+
+    ret = float3(0.10 * ink_ * ink_, ink_, 0.55 * chg_ + 0.25 * ink_ * chg_);
+
+    float asp_ = texsize.x / texsize.y;
+
+    // THE PEN. A GL line is one pixel wide at ANY resolution, so a bolt that reads on a 720p
+    // projector is a scratch on a 2940px buffer. The width is therefore set here, in SCREEN
+    // FRACTIONS: dilate the energy field by taking the max over a ring of taps, which is exactly a
+    // stroke of half-width THICK_ and looks the same on every display. max(), not a blur -- a blur
+    // would give back the haze. 0.002 is a wire, 0.006 is a rope.
+    float  THICK_ = 0.0035;
+    float2 ex_ = float2(THICK_ / asp_, 0.0);
+    float2 ey_ = float2(0.0, THICK_);
+    float2 ed_ = float2(0.7 * THICK_ / asp_, 0.7 * THICK_);
+    float2 eb_ = float2(0.7 * THICK_ / asp_, -0.7 * THICK_);
+
+    float st_ = GetState(uv);
+    st_ = max(st_, max(max(GetState(uv + ex_), GetState(uv - ex_)),
+                       max(GetState(uv + ey_), GetState(uv - ey_))));
+    st_ = max(st_, max(max(GetState(uv + ed_), GetState(uv - ed_)),
+                       max(GetState(uv + eb_), GetState(uv - eb_))));
+
+    // A second, much wider dilation at low weight: the glow around the arc. (The usual trick --
+    // GetBlur1/GetBlur2 -- is unavailable for this: those blur the MAIN buffer, which here is the ink
+    // simulation, so blooming off them would bloom the fluid, not the lightning.)
+    // (This was called gl_ for two hours, and GLSL RESERVES EVERY IDENTIFIER STARTING WITH "gl_".
+    // The comp therefore failed to compile and projectM silently fell back to its default composite
+    // -- which shows the raw main buffer -- so the dancer, the bolts and the whole colour ramp were
+    // never on screen at all, and the "static blue" was just .z's 0.5 baseline showing through. The
+    // preset LOOKED plausible the entire time. Author locals end in _; they must never BEGIN with gl.)
+    float  GLOW_ = 0.020;
+    float2 gx_ = float2(GLOW_ / asp_, 0.0);
+    float2 gy_ = float2(0.0, GLOW_);
+    float  glow_ = max(max(GetState(uv + gx_), GetState(uv - gx_)),
+                     max(GetState(uv + gy_), GetState(uv - gy_)));
+    glow_ = max(glow_, st_);
+
+    // THE DANCER, IN FULL FIDELITY. This is the variant's whole point: inside the silhouette you see
+    // the CAMERA, untouched -- their face, their clothes, the light in the room -- not a tinted ghost
+    // of it. The sandwich is strict:
+    //
+    //   ink (behind)  ->  DANCER (opaque)  ->  plasma (in front)
+    //
+    // so the fluid ripples behind the body, the body occludes it completely, and the bolts still burn
+    // in front of the hands that are holding them.
+    //
+    // Two changes from plasma-ink, and both matter:
+    //   * FULL OPACITY. The 0.95 blend was letting 5% of the ink through the body everywhere -- a
+    //     haze over the face that reads as "cheap composite" and costs contrast for nothing.
+    //   * A HARDENED MATTE. The seg model's alpha ramps softly over several pixels at the silhouette,
+    //     which against a bright, churning fluid becomes a visible halo of half-dancer. smoothstep
+    //     snaps that ramp into an edge, so the cutout is a cutout. (Raise the 0.30/0.70 window apart
+    //     for a softer edge if it starts to look cut out with scissors.)
+    float4 v_ = GetVideo(uv, 0.0);
+    float  seg_ = smoothstep(0.30, 0.70, v_.a);
+    ret = lerp(ret, v_.rgb, seg_);
+
+    // Contrast first: raising the field to a power is what separates a bolt from a mist -- it crushes
+    // the dim stuff toward black and leaves the hot spine of the arc standing.
+    float g_ = pow(saturate(st_), 1.5);
+
+    // White with a hint of blue: the blue lives at the FAINT end (halo, dying trails) and by the time
+    // a pixel is on the arc itself it is white -- which is what a spark looks like, and what survives
+    // a projector.
+    float3 ramp_ = float3(0.30, 0.55, 1.00) * g_
+                 + float3(0.80, 0.90, 1.00) * g_ * g_
+                 + float3(1.00, 1.00, 1.00) * pow(g_, 3.0);
+
+    ret += ramp_ * 1.15 + float3(0.10, 0.25, 0.55) * pow(saturate(glow_), 2.0) * (0.6 + 1.5*q12);
+}
+```
