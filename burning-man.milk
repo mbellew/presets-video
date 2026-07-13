@@ -223,8 +223,71 @@ per_frame_69=q11 = max(0, lit - ig);
 // The 15 s clock: if you never matched, fade out over 2 s and hand the playlist back via
 // preset_complete. Ignition cancels it -- once you are the Man, the preset is yours.
 per_frame_70=q8 = if(above(lit, 0.5), 1, 1 - min(1, max(0, (el - 15)/2)));
-per_frame_71=preset_complete = if(above(lit, 0.5), 0, above(el, 17.5));
-per_frame_72=q9 = 1;
+per_frame_71=q9 = 1;
+
+// ======================= THE COLLAPSE =====================================
+// The Man burns, and then the Man falls. Three phases, timed from IGNITION (not from preset start):
+//
+//   0 .. TBURN            he burns upright.
+//   TBURN .. +TFALL       he COLLAPSES: every joint's Y is drawn down to the ground. The pose is
+//                         still tracking you, so he keeps flailing as he sinks -- he does not
+//                         freeze and drop, he goes down still moving.
+//   +TEMBER               the wreckage keeps burning on the ground, then preset_complete.
+//
+// GROUND is where the ground IS, in pose coordinates. Pose Y is BOTTOM-UP (poseTracker normalizes
+// with 1 - pixel_y/height), so the floor is the SMALL value. If the figure ever falls UPWARD, this
+// is the one number to flip -- 0.1 becomes 0.9.
+per_frame_72=TBURN = 10; TFALL = 5; GROUND = 0.1;
+// ...and what happens when he LANDS. TFADE is how fast the limbs go out. TEMBER is how long after
+// the LAST spark blast the preset lives on -- and the last blast is the last body part reaching the
+// ground, which IS the end of the collapse (TBURN + TFALL). So the preset ends at TEMBER seconds
+// past the final impact, with the embers still climbing as it hands off. (TSPARK is now vestigial:
+// a spark dies by COOLING, not on a timer.)
+per_frame_73=TSPARK = 2.5; TFADE = 1.5; TEMBER = 3.0;
+// Ignition time, captured once (t0 is the PRESET clock; this is the FIRE clock).
+per_frame_74=tlit = if(above(lit, 0.5), if(equal(tlit, 0), time, tlit), 0);
+per_frame_75=bel = if(above(lit, 0.5), time - tlit, 0);          // seconds since he caught
+// The fall, 0..1. SQUARED, so it accelerates: a linear collapse reads as a lift lowering him, and
+// this is supposed to be a body giving way. Slow start, fast finish.
+per_frame_76=fall = min(1, max(0, (bel - TBURN) / TFALL)); fall = fall*fall;
+per_frame_77=q17 = fall; q18 = GROUND;
+// End of life: burn out on the ground, then hand the playlist back. (One-shot: preset_complete is a
+// latch the engine clears each frame.)
+// --- IMPACT. He does not settle onto the ground, he HITS it: the moment the fall completes, the
+// figure bursts into sparks and the strokes themselves go out fast, leaving only the sparks to die.
+// st = seconds since impact (0 before it).
+per_frame_78=st = max(0, bel - (TBURN + TFALL)); hit = above(bel, TBURN + TFALL);
+per_frame_79=q19 = st; q22 = hit;
+
+// --- SPARK PHYSICS: NO GRAVITY. These are embers off a fire, not debris -- they do not arc and
+// fall, they get taken by the rising heat and go UP. Three forces:
+//   BURST   the outward kick of the impact. It DIES with drag, so it only shapes the first moment.
+//   UPDRAFT a steady upward acceleration that takes over once the burst has bled off.
+//   WANDER  a slow sideways drift, unique per spark, so they do NOT rise in straight lines --
+//           straight-up embers look like a fountain; real ones curl and cross.
+per_frame_80=BURST = 1.0; DRAG = 3.2; UPDRAFT = 0.55; WANDER = 0.10; WFRQ = 2.4;
+per_frame_81=q24 = UPDRAFT; q27 = BURST; q28 = DRAG; q29 = WANDER; q30 = WFRQ;
+// --- AUDIO AS A SEED, captured ONCE at impact. A spark's randomness is a hash of its INDEX, which
+// is what keeps it on its own path instead of re-rolling every frame -- live audio in a spark's
+// POSITION would make the shower boil rather than fly. Mixing an audio snapshot into the hash gives
+// a burst that is different every RUN but fixed while it flies.
+per_frame_82=sseed = if(hit, if(equal(sseed, 0), 1 + bass*7.3 + treb*3.1 + time*0.37, sseed), 0);
+per_frame_83=q25 = sseed;
+// --- LIVE audio, safe to use: it flickers BRIGHTNESS, never position.
+per_frame_84=q26 = 0.75 + 0.55*treb_att;
+// The fire clock and the fall timeline, for the per-emitter launches in the wave code. TBURN/TFALL
+// are PACKED into one q (only 32 exist and we are nearly out): q32 = TBURN*100 + TFALL, unpacked
+// with a floor() on the other side. Keeps the constants defined in exactly one place.
+per_frame_85=q31 = bel; q32 = TBURN*100 + TFALL;
+// The strokes go BLACK quickly -- the body is spent; what you keep watching is what flew off it.
+per_frame_86=q20 = hit * max(0, 1 - st/TFADE) + (1 - hit);
+// Spark life, and the white flash at the instant of contact (feeds the comp bloom).
+// The spark envelope closes right at the end. With only TEMBER = 2 s left, a long taper would dim
+// the burst while it is still climbing -- so hold it bright and pull it out over the last 0.5 s.
+per_frame_87=q21 = lit * min(1, max(0, (TBURN + TFALL + TEMBER - bel) / 0.5));
+per_frame_88=q23 = hit * exp(-st*5);
+per_frame_89=pcfall = above(bel, TBURN + TFALL + TEMBER);
+per_frame_90=preset_complete = if(above(lit, 0.5), pcfall, above(el, 17.5));
 
 // ======================= THE TELL: WARMTH =================================
 // The figure warms toward YELLOW as you close in on the pose. This is the whole feedback loop: it is
@@ -247,11 +310,14 @@ per_frame_72=q9 = 1;
 // frame back into the next, so brightness INTEGRATES: any decay too near 1 and the screen ramps to
 // solid white in a few seconds. Mode 2 pumps in the most light (thicker strokes, bloom, more zoom),
 // so it needs the MOST cooling, not the least.
-per_frame_73=decay = 0.85 - 0.06*q2;
-per_frame_74=zoom = 1.012 + 0.012*q2;
-per_frame_75=warp = 0.9*q2;
-per_frame_76=rot = 0.010*q2*sin(time*0.31);
-per_frame_77=wave_a = 0;
+// After the impact, everything goes to black: the burning trails held in the feedback buffer are
+// dumped by dropping decay hard (q22 = landed), so a couple of seconds after the sparks the screen
+// is dark and the preset hands off into nothing.
+per_frame_91=decay = (0.85 - 0.06*q2) * (1 - 0.22*q22);
+per_frame_92=zoom = 1.012 + 0.012*q2;
+per_frame_93=warp = 0.9*q2;
+per_frame_94=rot = 0.010*q2*sin(time*0.31);
+per_frame_95=wave_a = 0;
 
 // The updraft: everything the Man burns off rises. (Y-DOWN, so up is negative dy.)
 per_pixel_1=dy = -0.008 * q2;
@@ -272,12 +338,12 @@ strokecode_0_enabled=1
 strokecode_0_additive=1
 strokecode_0_num_inst=1
 strokecode_0_segments=48
-stroke_0_per_frame1=x0 = pose(JOINT_L_ANKLE,    POSE_X); y0 = pose(JOINT_L_ANKLE,    POSE_Y);
-stroke_0_per_frame2=x1 = pose(JOINT_L_HIP,      POSE_X); y1 = pose(JOINT_L_HIP,      POSE_Y);
-stroke_0_per_frame3=x2 = pose(JOINT_L_SHOULDER, POSE_X); y2 = pose(JOINT_L_SHOULDER, POSE_Y);
-stroke_0_per_frame4=x3 = pose(JOINT_L_WRIST,    POSE_X); y3 = pose(JOINT_L_WRIST,    POSE_Y);
+stroke_0_per_frame1=x0 = pose(JOINT_L_ANKLE,    POSE_X); y0 = q18 + (pose(JOINT_L_ANKLE, POSE_Y) - q18)*(1-q17);
+stroke_0_per_frame2=x1 = pose(JOINT_L_HIP,      POSE_X); y1 = q18 + (pose(JOINT_L_HIP, POSE_Y) - q18)*(1-q17);
+stroke_0_per_frame3=x2 = pose(JOINT_L_SHOULDER, POSE_X); y2 = q18 + (pose(JOINT_L_SHOULDER, POSE_Y) - q18)*(1-q17);
+stroke_0_per_frame4=x3 = pose(JOINT_L_WRIST,    POSE_X); y3 = q18 + (pose(JOINT_L_WRIST, POSE_Y) - q18)*(1-q17);
 // The logo's taper: zero width at foot and wrist, fat through the waist. Thickens as it burns.
-stroke_0_per_frame5=w0 = 0; wmid = q1 * (0.28 + 0.18*q2); w1 = 0;
+stroke_0_per_frame5=w0 = 0; wmid = q1 * (0.28 + 0.18*q2) * q20; w1 = 0;
 // A stroke is only as trustworthy as its weakest control joint.
 stroke_0_per_frame6=cf = min(min(pose(JOINT_L_ANKLE,POSE_CONF), pose(JOINT_L_HIP,POSE_CONF)), min(pose(JOINT_L_SHOULDER,POSE_CONF), pose(JOINT_L_WRIST,POSE_CONF)));
 // Fire colour, cycling. Ends of the stroke run hotter than the middle (cyc2, a phase ahead).
@@ -301,39 +367,33 @@ stroke_0_per_frame7=cyc = 0.5 + 0.5*sin(time*1.00); cyc2 = 0.5 + 0.5*sin(time*1.
 // gradient breathes instead of sitting still.
 stroke_0_per_frame8=h = cyc*cyc;   fr = 1.0; fg = 0.03 + 0.59*h;  fb = 0.01 + 0.10*h*h;
 stroke_0_per_frame9=h2 = cyc2*cyc2; fr2 = 1.0; fg2 = 0.03 + 0.59*h2; fb2 = 0.01 + 0.10*h2*h2;
-// Stage 2: THE TELL, per limb, on a THREE-STOP scale:
+// Stage 2: COLD = WHITE. Nothing else.
 //
-//     WHITE  ---------->  YELLOW  ---------->  RED
-//     wrong               close                really close (about to ignite)
+// The per-limb warmth (white -> yellow -> red as each limb closed on the pose) was a DEBUGGING aid:
+// it made the match score visible so the pose could be tuned. It also gave the whole thing away --
+// the Man told you when you were getting warm, and the discovery is the point. So he stays white
+// until he catches, and the only way to find the pose is to find it.
 //
-// Two stops were not enough: yellow arrived as soon as you were roughly symmetric and then sat
-// there, so "close" and "closer" looked identical. Red re-opens the top of the range -- the last
-// stretch, where the score is barely moving, now has a colour of its own.
-//
-// Each END of the stroke reads the limb it belongs to: the FOOT end tracks this leg (q15), the
-// WRIST end tracks this arm (q13). A red hand over a white foot means the arm is dead on and the
-// leg is nowhere -- the figure shows you WHERE you are wrong, limb by limb.
-//   yl = white -> yellow (first 60% of the range), rd = yellow -> red (last 40%).
-stroke_0_per_frame10=yl = min(1, q15/0.6); rd = max(0, (q15-0.6)/0.4);
-stroke_0_per_frame11=wr = 1; wg = (1 - 0.10*yl)*(1 - 0.88*rd); wb = (1 - 0.85*yl)*(1 - 0.90*rd);
-stroke_0_per_frame12=yl2 = min(1, q13/0.6); rd2 = max(0, (q13-0.6)/0.4);
-stroke_0_per_frame13=wr2 = 1; wg2 = (1 - 0.10*yl2)*(1 - 0.88*rd2); wb2 = (1 - 0.85*yl2)*(1 - 0.90*rd2);
+// The per-limb scores (q13..q16) are still computed above and still bridged; nothing reads them now.
+// Re-point wg/wb at them to bring the tell back for tuning.
+stroke_0_per_frame10=wr = 1; wg = 1; wb = 1;
+stroke_0_per_frame11=wr2 = 1; wg2 = 1; wb2 = 1;
 // Stage 3: those warmed colours -> fire, crossfaded by the ignition ramp (q2).
-stroke_0_per_frame14=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2;
-stroke_0_per_frame15=r2 = wr2 + (fr2 - wr2)*q2; g2 = wg2 + (fg2 - wg2)*q2; b2 = wb2 + (fb2 - wb2)*q2;
+stroke_0_per_frame12=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2;
+stroke_0_per_frame13=r2 = wr2 + (fr2 - wr2)*q2; g2 = wg2 + (fg2 - wg2)*q2; b2 = wb2 + (fb2 - wb2)*q2;
 // Brighten as the match closes in (q9), and obey the 15 s fade (q8).
 // Alpha ramps too: the foot end is dimmer, so the figure reads as rising out of the dark.
-stroke_0_per_frame16=a2 = cf * q3 * q8 * q9; a = a2 * 0.55;
+stroke_0_per_frame14=a2 = cf * q3 * q8 * q9 * q20; a = a2 * 0.55;
 
 strokecode_1_enabled=1
 strokecode_1_additive=1
 strokecode_1_num_inst=1
 strokecode_1_segments=48
-stroke_1_per_frame1=x0 = pose(JOINT_R_ANKLE,    POSE_X); y0 = pose(JOINT_R_ANKLE,    POSE_Y);
-stroke_1_per_frame2=x1 = pose(JOINT_R_HIP,      POSE_X); y1 = pose(JOINT_R_HIP,      POSE_Y);
-stroke_1_per_frame3=x2 = pose(JOINT_R_SHOULDER, POSE_X); y2 = pose(JOINT_R_SHOULDER, POSE_Y);
-stroke_1_per_frame4=x3 = pose(JOINT_R_WRIST,    POSE_X); y3 = pose(JOINT_R_WRIST,    POSE_Y);
-stroke_1_per_frame5=w0 = 0; wmid = q1 * (0.28 + 0.18*q2); w1 = 0;
+stroke_1_per_frame1=x0 = pose(JOINT_R_ANKLE,    POSE_X); y0 = q18 + (pose(JOINT_R_ANKLE, POSE_Y) - q18)*(1-q17);
+stroke_1_per_frame2=x1 = pose(JOINT_R_HIP,      POSE_X); y1 = q18 + (pose(JOINT_R_HIP, POSE_Y) - q18)*(1-q17);
+stroke_1_per_frame3=x2 = pose(JOINT_R_SHOULDER, POSE_X); y2 = q18 + (pose(JOINT_R_SHOULDER, POSE_Y) - q18)*(1-q17);
+stroke_1_per_frame4=x3 = pose(JOINT_R_WRIST,    POSE_X); y3 = q18 + (pose(JOINT_R_WRIST, POSE_Y) - q18)*(1-q17);
+stroke_1_per_frame5=w0 = 0; wmid = q1 * (0.28 + 0.18*q2) * q20; w1 = 0;
 stroke_1_per_frame6=cf = min(min(pose(JOINT_R_ANKLE,POSE_CONF), pose(JOINT_R_HIP,POSE_CONF)), min(pose(JOINT_R_SHOULDER,POSE_CONF), pose(JOINT_R_WRIST,POSE_CONF)));
 // The other stroke's own cycle speed -- deliberately not a multiple of the first.
 stroke_1_per_frame7=cyc = 0.5 + 0.5*sin(time*1.29 + 2.6); cyc2 = 0.5 + 0.5*sin(time*2.17 + 4.1);
@@ -342,13 +402,11 @@ stroke_1_per_frame7=cyc = 0.5 + 0.5*sin(time*1.29 + 2.6); cyc2 = 0.5 + 0.5*sin(t
 // gradient breathes instead of sitting still.
 stroke_1_per_frame8=h = cyc*cyc;   fr = 1.0; fg = 0.03 + 0.59*h;  fb = 0.01 + 0.10*h*h;
 stroke_1_per_frame9=h2 = cyc2*cyc2; fr2 = 1.0; fg2 = 0.03 + 0.59*h2; fb2 = 0.01 + 0.10*h2*h2;
-stroke_1_per_frame10=yl = min(1, q16/0.6); rd = max(0, (q16-0.6)/0.4);
-stroke_1_per_frame11=wr = 1; wg = (1 - 0.10*yl)*(1 - 0.88*rd); wb = (1 - 0.85*yl)*(1 - 0.90*rd);
-stroke_1_per_frame12=yl2 = min(1, q14/0.6); rd2 = max(0, (q14-0.6)/0.4);
-stroke_1_per_frame13=wr2 = 1; wg2 = (1 - 0.10*yl2)*(1 - 0.88*rd2); wb2 = (1 - 0.85*yl2)*(1 - 0.90*rd2);
-stroke_1_per_frame14=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2;
-stroke_1_per_frame15=r2 = wr2 + (fr2 - wr2)*q2; g2 = wg2 + (fg2 - wg2)*q2; b2 = wb2 + (fb2 - wb2)*q2;
-stroke_1_per_frame16=a2 = cf * q3 * q8 * q9; a = a2 * 0.55;
+stroke_1_per_frame10=wr = 1; wg = 1; wb = 1;
+stroke_1_per_frame11=wr2 = 1; wg2 = 1; wb2 = 1;
+stroke_1_per_frame12=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2;
+stroke_1_per_frame13=r2 = wr2 + (fr2 - wr2)*q2; g2 = wg2 + (fg2 - wg2)*q2; b2 = wb2 + (fb2 - wb2)*q2;
+stroke_1_per_frame14=a2 = cf * q3 * q8 * q9 * q20; a = a2 * 0.55;
 
 // ======================= THE DIAMOND HEAD (hollow) ========================
 // One stroke, 4 instances -- `instance` picks which EDGE. Collinear control points make each edge a
@@ -366,8 +424,8 @@ strokecode_2_additive=1
 strokecode_2_num_inst=4
 strokecode_2_segments=6
 stroke_2_per_frame1=hsize = 0.6; hdrop = 0.45; hang = 0;
-stroke_2_per_frame2=hx = pose(JOINT_HEAD, POSE_X); hy = pose(JOINT_HEAD, POSE_Y);
-stroke_2_per_frame3=hx = hx + (q6 - hx)*hdrop; hy = hy + (q7 - hy)*hdrop; hr = q1 * hsize; ha = hang*0.0174533;
+stroke_2_per_frame2=hx = pose(JOINT_HEAD, POSE_X); hy = q18 + (pose(JOINT_HEAD, POSE_Y) - q18)*(1-q17);
+stroke_2_per_frame3=gy7 = q18 + (q7 - q18)*(1-q17); hx = hx + (q6 - hx)*hdrop; hy = hy + (gy7 - hy)*hdrop; hr = q1 * hsize; ha = hang*0.0174533;
 stroke_2_per_frame4=e = instance; e2 = e + 1; e2 = if(above(e2, 3), 0, e2);
 // Corner k sits at angle ha + k*90 deg, built in UNIT space -- rotating after the aspect correction
 // below would shear the head instead of turning it. (an1/an2, NOT a1/a2: a2 is the end-alpha.)
@@ -379,13 +437,204 @@ stroke_2_per_frame8=x3 = hx + vx*hr*q5; y3 = hy + vy*hr*q4;
 // Collinear controls at 1/3 and 2/3 => a straight edge.
 stroke_2_per_frame9=x1 = x0 + (x3-x0)/3; y1 = y0 + (y3-y0)/3;
 stroke_2_per_frame10=x2 = x0 + (x3-x0)*2/3; y2 = y0 + (y3-y0)*2/3;
-stroke_2_per_frame11=hw = q1 * (0.05 + 0.03*q2); w0 = hw; wmid = hw; w1 = hw;
+stroke_2_per_frame11=hw = q1 * (0.05 + 0.03*q2) * q20; w0 = hw; wmid = hw; w1 = hw;
 // The head burns SLOWEST -- it is the last thing to go yellow, so it reads as the beacon.
 stroke_2_per_frame12=cyc = 0.5 + 0.5*sin(time*0.71 + 1.2);
 stroke_2_per_frame13=h = cyc*cyc; fr = 1.0; fg = 0.03 + 0.59*h; fb = 0.01 + 0.10*h*h;
-stroke_2_per_frame14=yl = min(1, q12/0.6); rd = max(0, (q12-0.6)/0.4); wr = 1; wg = (1 - 0.10*yl)*(1 - 0.88*rd); wb = (1 - 0.85*yl)*(1 - 0.90*rd);
+stroke_2_per_frame14=wr = 1; wg = 1; wb = 1;
 stroke_2_per_frame15=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2; r2 = r; g2 = g; b2 = b;
-stroke_2_per_frame16=a = pose(JOINT_HEAD, POSE_CONF) * q3 * q8 * q9; a2 = a;
+stroke_2_per_frame16=a = pose(JOINT_HEAD, POSE_CONF) * q3 * q8 * q9 * q20; a2 = a;
+
+// ======================= THE SPARKS (impact burst) ========================
+// The BIG sparks: a dozen streaks, one per instance of a single strokecode. Each is launched from the
+// point of impact at its own angle and speed, arcing up and then pulled back down by gravity. The
+// other ~500 sparks are dots, drawn by the custom wave below -- these twelve are the ones you can
+// actually see move, because a stroke can taper and stretch and a GL point cannot.
+//
+// The randomness is a HASH of the instance index, not a random number: eval has no per-instance RNG,
+// and rand() would re-roll every frame and make each spark jitter instead of fly. frac(sin(i*k)*big)
+// is the standard trick -- deterministic per spark, so a spark keeps its own trajectory, but
+// scattered enough across instances to look unplanned.
+//
+// The streak is drawn from where the spark WAS (a moment ago) to where it IS, so it stretches with
+// speed: fast sparks are long, dying ones are short. That is free motion blur.
+strokecode_3_enabled=1
+strokecode_3_additive=1
+strokecode_3_num_inst=12
+strokecode_3_segments=5
+// Per-spark constants, hashed from the instance index.
+stroke_3_per_frame1=i = instance; h1 = sin(i*12.9898 + 4.1 + q25*17.3)*43758.5453; h1 = h1 - floor(h1);
+stroke_3_per_frame2=h2 = sin(i*78.233 + 1.7 + q25*29.7)*43758.5453; h2 = h2 - floor(h2);
+stroke_3_per_frame3=h3 = sin(i*39.425 + 9.3 + q25*11.1)*43758.5453; h3 = h3 - floor(h3);
+stroke_3_per_frame4=h4 = sin(i*93.989 + 2.4 + q25*23.5)*43758.5453; h4 = h4 - floor(h4);
+stroke_3_per_frame5=ang = h1*6.2831853; spd = 0.18 + q27*h2*h2;
+stroke_3_per_frame6=ox = q6; oy = q18;
+// Two samples of the same path, 0.05 s apart: the streak is drawn from where the spark WAS to where
+// it IS, so it stretches with speed. Fast sparks are long, dying ones are short -- free motion blur.
+stroke_3_per_frame7=t = max(0, q19 - h3*0.06); tp = max(0, t - 0.05);
+stroke_3_per_frame8=up = q24 * (0.45 + 1.1*h4);
+stroke_3_per_frame9=bo = (1 - exp(-q28*t))  / q28; bp = (1 - exp(-q28*tp)) / q28;
+stroke_3_per_frame10=wo = q29 * sin(t *q30*(0.6 + 0.8*h1) + h2*6.2831853) * t  * (0.4 + h3);
+stroke_3_per_frame11=wp = q29 * sin(tp*q30*(0.6 + 0.8*h1) + h2*6.2831853) * tp * (0.4 + h3);
+stroke_3_per_frame12=x3 = ox + cos(ang)*spd*bo + wo; y3 = oy + sin(ang)*spd*bo + 0.5*up*t*t;
+stroke_3_per_frame13=x0 = ox + cos(ang)*spd*bp + wp; y0 = oy + sin(ang)*spd*bp + 0.5*up*tp*tp;
+// Straight streak: collinear controls.
+stroke_3_per_frame14=x1 = x0 + (x3-x0)/3; y1 = y0 + (y3-y0)/3;
+stroke_3_per_frame15=x2 = x0 + (x3-x0)*2/3; y2 = y0 + (y3-y0)*2/3;
+// Tapered: a point at the tail, thickest at the head.
+stroke_3_per_frame16=w0 = 0; wmid = 0.008; w1 = 0.016;
+// Tail deep red, head white-hot -- the streak IS the colour ramp.
+stroke_3_per_frame17=cool = exp(-t*1.5);
+stroke_3_per_frame18=r = 1; g = 0.10*cool; b = 0.0;
+stroke_3_per_frame19=r2 = 1; g2 = 0.85*cool; b2 = 0.55*cool*cool;
+stroke_3_per_frame20=sa = q21 * cool * (0.4 + 0.6*h2) * q26;
+stroke_3_per_frame21=a = sa * 0.5; a2 = sa;
+
+// ======================= THE EMBER SHOWER (512 dots) ======================
+// The streaks above are only a dozen; the BULK of the burst is here -- 512 embers, drawn as a custom
+// waveform in DOT mode (bUseDots=1 -> GL_POINTS). This is the cheap way to get a real shower: 512
+// points is ONE draw call, where 512 stroke instances would be 512 of them.
+//
+// The per-point code ignores the audio entirely. `sample` (0..1) is just an index, and each point
+// hashes it into its own launch angle, speed and stagger -- so this is a particle system whose state
+// is a pure function of (spark index, time since impact). Nothing is stored between frames.
+//
+// COORDINATE GOTCHA: custom waves scale by invAspectX/invAspectY -- strokes and shapes do NOT. On a
+// wide screen that stretches wave Y by ~1.65, so y outside about 0.20..0.80 falls off-screen and the
+// ground (y = 0.1) would be invisible. q4/q5 (the reciprocal aspects) undo it exactly, which is what
+// the last line does. Get this wrong and the sparks silently vanish.
+wavecode_0_enabled=1
+wavecode_0_samples=512
+wavecode_0_bSpectrum=0
+wavecode_0_bUseDots=1
+wavecode_0_bDrawThick=1
+wavecode_0_bAdditive=1
+wavecode_0_scaling=1.0
+wavecode_0_smoothing=0.0
+wavecode_0_a=1.0
+// Per-spark constants, hashed from the point index. Deterministic, so a spark keeps its own
+// trajectory frame to frame -- rand() would re-roll every frame and the shower would boil instead
+// of fly.
+wavecode_0_enabled=1
+wavecode_0_samples=512
+wavecode_0_bSpectrum=0
+wavecode_0_bUseDots=1
+wavecode_0_bDrawThick=1
+wavecode_0_bAdditive=1
+wavecode_0_scaling=1.0
+wavecode_0_smoothing=0.0
+wavecode_0_a=1.0
+// SIX EMITTERS, one per body part -- each throws its sparks as IT arrives at the ground. The head is
+// highest so it lands last; a dropped wrist lands early. The burst is a ragged SEQUENCE of impacts
+// rather than one synchronized pop.
+//
+// NO FEET. The feet are ALREADY on the ground -- an ankle emitter would fire at the START of the
+// fall, when the figure is still standing, and the sparks would read as the ground erupting instead
+// of a body landing on it. What tells you he is DOWN is the upper body arriving: wrists, shoulders,
+// head, chest.
+//
+// pose() is registered in the waveform per-point context, so the dots read the joints DIRECTLY --
+// no q-bridging needed for the emitters.
+wave_0_per_point1=i = sample*511; e = min(floor(i/85.34), 5);
+// Unpack the fall timeline (TBURN*100 + TFALL, packed into q32 -- only 32 q's exist and we are out).
+wave_0_per_point2=TB = floor(q32/100); TF = q32 - TB*100;
+// This emitter's joint: 0,1 = wrists, 2,3 = shoulders, 4 = head, 5 = chest.
+wave_0_per_point3=jx = if(equal(e,0), pose(JOINT_L_WRIST,POSE_X), if(equal(e,1), pose(JOINT_R_WRIST,POSE_X), if(equal(e,2), pose(JOINT_L_SHOULDER,POSE_X), if(equal(e,3), pose(JOINT_R_SHOULDER,POSE_X), if(equal(e,4), pose(JOINT_HEAD,POSE_X), pose(JOINT_HEART,POSE_X))))));
+wave_0_per_point4=jy = if(equal(e,0), pose(JOINT_L_WRIST,POSE_Y), if(equal(e,1), pose(JOINT_R_WRIST,POSE_Y), if(equal(e,2), pose(JOINT_L_SHOULDER,POSE_Y), if(equal(e,3), pose(JOINT_R_SHOULDER,POSE_Y), if(equal(e,4), pose(JOINT_HEAD,POSE_Y), pose(JOINT_HEART,POSE_Y))))));
+// WHEN does this part reach the ground? Its height collapses as GROUND + (jy-GROUND)*(1-fall), and
+// fall is the SQUARE of linear progress -- so invert it: the part is within EPS of the floor once
+// fall > 1 - EPS/height, i.e. at fire-clock time TB + TF*sqrt(that). A tall part crosses later than
+// a low one, so the stagger falls out of the collapse itself. Nothing to schedule.
+wave_0_per_point5=hgt = max(0.03, jy - q18); fl = max(0, 1 - 0.05/hgt);
+wave_0_per_point6=tl = TB + TF*sqrt(fl);
+// Per-spark constants, hashed from the point index (+ the audio seed q25, so every burst differs).
+// Deterministic: a spark keeps its own path frame to frame. rand() would re-roll it every frame and
+// the shower would boil in place instead of flying.
+wave_0_per_point7=h1 = sin(i*12.9898 + 4.1 + q25*17.3)*43758.5453; h1 = h1 - floor(h1);
+wave_0_per_point8=h2 = sin(i*78.233  + 1.7 + q25*29.7)*43758.5453; h2 = h2 - floor(h2);
+wave_0_per_point9=h3 = sin(i*39.425  + 9.3 + q25*11.1)*43758.5453; h3 = h3 - floor(h3);
+wave_0_per_point10=h4 = sin(i*93.989 + 2.4 + q25*23.5)*43758.5453; h4 = h4 - floor(h4);
+// This spark's age: time since ITS OWN emitter landed, plus a stagger so a batch trickles out.
+wave_0_per_point11=t = max(0, q31 - tl - h3*0.20); live = above(q31, tl);
+// BURST: a full 360 fan off the point of contact, bleeding away with drag.
+wave_0_per_point12=ang = h1*6.2831853; spd = 0.08 + q27*h2*h2*1.00;
+wave_0_per_point13=bo = (1 - exp(-q28*t)) / q28;
+// UPDRAFT, per spark, so the column frays instead of rising as a slab. No gravity: these are embers.
+wave_0_per_point14=up = q24 * (0.45 + 1.1*h4);
+// WANDER: a slow sideways sine, its own frequency and phase -- without it they rise in parallel lines.
+wave_0_per_point15=wob = q29 * sin(t*q30*(0.6 + 0.8*h1) + h2*6.2831853) * t * (0.4 + h3);
+wave_0_per_point16=xt = jx + cos(ang)*spd*bo + wob;
+wave_0_per_point17=yt = q18 + 0.04 + sin(ang)*spd*bo + 0.5*up*t*t;
+// Cooling: white-hot at contact, deep red as it climbs, then out. The fade IS the ember dying.
+wave_0_per_point18=cool = exp(-t*1.5);
+wave_0_per_point19=r = 1; g = 0.06 + 0.78*cool*(0.4 + 0.6*h2); b = 0.35*cool*cool*h1;
+// q26 is LIVE audio -- it flickers brightness with the music. Safe: it never touches position.
+wave_0_per_point20=a = q21 * live * cool * (0.25 + 0.75*h2) * q26;
+// Undo the wave's aspect scaling (waves scale by invAspect; strokes do NOT), or the sparks silently
+// fall off-screen -- on a wide screen wave y outside ~0.20..0.80 is not even drawn.
+wave_0_per_point21=x = 0.5 + (xt - 0.5)*q4; y = 0.5 + (yt - 0.5)*q5;
+
+// A SECOND 512 -- 1024 embers, still only two draw calls. Same physics, different seed offsets,
+// and finer/dimmer/longer-lived: a haze of small sparks behind the bright ones, not a visible
+// second copy.
+wavecode_1_enabled=1
+wavecode_1_samples=512
+wavecode_1_bSpectrum=0
+wavecode_1_bUseDots=1
+wavecode_1_bDrawThick=0
+wavecode_1_bAdditive=1
+wavecode_1_scaling=1.0
+wavecode_1_smoothing=0.0
+wavecode_1_a=1.0
+// SIX EMITTERS, one per body part -- each throws its sparks as IT arrives at the ground. The head is
+// highest so it lands last; a dropped wrist lands early. The burst is a ragged SEQUENCE of impacts
+// rather than one synchronized pop.
+//
+// NO FEET. The feet are ALREADY on the ground -- an ankle emitter would fire at the START of the
+// fall, when the figure is still standing, and the sparks would read as the ground erupting instead
+// of a body landing on it. What tells you he is DOWN is the upper body arriving: wrists, shoulders,
+// head, chest.
+//
+// pose() is registered in the waveform per-point context, so the dots read the joints DIRECTLY --
+// no q-bridging needed for the emitters.
+wave_1_per_point1=i = sample*511; e = min(floor(i/85.34), 5);
+// Unpack the fall timeline (TBURN*100 + TFALL, packed into q32 -- only 32 q's exist and we are out).
+wave_1_per_point2=TB = floor(q32/100); TF = q32 - TB*100;
+// This emitter's joint: 0,1 = wrists, 2,3 = shoulders, 4 = head, 5 = chest.
+wave_1_per_point3=jx = if(equal(e,0), pose(JOINT_L_WRIST,POSE_X), if(equal(e,1), pose(JOINT_R_WRIST,POSE_X), if(equal(e,2), pose(JOINT_L_SHOULDER,POSE_X), if(equal(e,3), pose(JOINT_R_SHOULDER,POSE_X), if(equal(e,4), pose(JOINT_HEAD,POSE_X), pose(JOINT_HEART,POSE_X))))));
+wave_1_per_point4=jy = if(equal(e,0), pose(JOINT_L_WRIST,POSE_Y), if(equal(e,1), pose(JOINT_R_WRIST,POSE_Y), if(equal(e,2), pose(JOINT_L_SHOULDER,POSE_Y), if(equal(e,3), pose(JOINT_R_SHOULDER,POSE_Y), if(equal(e,4), pose(JOINT_HEAD,POSE_Y), pose(JOINT_HEART,POSE_Y))))));
+// WHEN does this part reach the ground? Its height collapses as GROUND + (jy-GROUND)*(1-fall), and
+// fall is the SQUARE of linear progress -- so invert it: the part is within EPS of the floor once
+// fall > 1 - EPS/height, i.e. at fire-clock time TB + TF*sqrt(that). A tall part crosses later than
+// a low one, so the stagger falls out of the collapse itself. Nothing to schedule.
+wave_1_per_point5=hgt = max(0.03, jy - q18); fl = max(0, 1 - 0.05/hgt);
+wave_1_per_point6=tl = TB + TF*sqrt(fl);
+// Per-spark constants, hashed from the point index (+ the audio seed q25, so every burst differs).
+// Deterministic: a spark keeps its own path frame to frame. rand() would re-roll it every frame and
+// the shower would boil in place instead of flying.
+wave_1_per_point7=h1 = sin(i*12.9898 + 7.7 + q25*17.3)*43758.5453; h1 = h1 - floor(h1);
+wave_1_per_point8=h2 = sin(i*78.233  + 3.3 + q25*29.7)*43758.5453; h2 = h2 - floor(h2);
+wave_1_per_point9=h3 = sin(i*39.425  + 5.9 + q25*11.1)*43758.5453; h3 = h3 - floor(h3);
+wave_1_per_point10=h4 = sin(i*93.989 + 8.8 + q25*23.5)*43758.5453; h4 = h4 - floor(h4);
+// This spark's age: time since ITS OWN emitter landed, plus a stagger so a batch trickles out.
+wave_1_per_point11=t = max(0, q31 - tl - h3*0.20); live = above(q31, tl);
+// BURST: a full 360 fan off the point of contact, bleeding away with drag.
+wave_1_per_point12=ang = h1*6.2831853; spd = 0.08 + q27*h2*h2*0.65;
+wave_1_per_point13=bo = (1 - exp(-q28*t)) / q28;
+// UPDRAFT, per spark, so the column frays instead of rising as a slab. No gravity: these are embers.
+wave_1_per_point14=up = q24 * (0.45 + 1.1*h4);
+// WANDER: a slow sideways sine, its own frequency and phase -- without it they rise in parallel lines.
+wave_1_per_point15=wob = q29 * sin(t*q30*(0.6 + 0.8*h1) + h2*6.2831853) * t * (0.4 + h3);
+wave_1_per_point16=xt = jx + cos(ang)*spd*bo + wob;
+wave_1_per_point17=yt = q18 + 0.04 + sin(ang)*spd*bo + 0.5*up*t*t;
+// Cooling: white-hot at contact, deep red as it climbs, then out. The fade IS the ember dying.
+wave_1_per_point18=cool = exp(-t*1.0);
+wave_1_per_point19=r = 1; g = 0.06 + 0.78*cool*(0.4 + 0.6*h2); b = 0.35*cool*cool*h1;
+// q26 is LIVE audio -- it flickers brightness with the music. Safe: it never touches position.
+wave_1_per_point20=a = q21 * live * cool * (0.10 + 0.45*h2) * q26;
+// Undo the wave's aspect scaling (waves scale by invAspect; strokes do NOT), or the sparks silently
+// fall off-screen -- on a wide screen wave y outside ~0.20..0.80 is not even drawn.
+wave_1_per_point21=x = 0.5 + (xt - 0.5)*q4; y = 0.5 + (yt - 0.5)*q5;
 
 warp_1=`shader_body
 warp_2=`{
@@ -404,5 +653,6 @@ comp_2=`{
 comp_3=`    float3 c_ = GetPixel(uv);
 comp_4=`    // Bloom, so the hot parts actually read as fire. Cold mode gets a touch for the glow.
 comp_5=`    float3 b_ = (GetBlur1(uv) + GetBlur2(uv)) * 0.5;
-comp_6=`    ret = c_ + b_*b_ * (0.35 + 1.15*q2);
-comp_7=`}
+comp_6=`    // q23 spikes at the instant of impact and decays away -- the white flash of him landing.
+comp_7=`    ret = c_ + b_*b_ * (0.35 + 1.15*q2 + 8.0*q23);
+comp_8=`}
