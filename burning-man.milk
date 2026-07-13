@@ -243,7 +243,7 @@ per_frame_72=TBURN = 10; TFALL = 5; GROUND = 0.1;
 // ground, which IS the end of the collapse (TBURN + TFALL). So the preset ends at TEMBER seconds
 // past the final impact, with the embers still climbing as it hands off. (TSPARK is now vestigial:
 // a spark dies by COOLING, not on a timer.)
-per_frame_73=TSPARK = 2.5; TFADE = 1.5; TEMBER = 3.0;
+per_frame_73=TSPARK = 2.5; TFADE = 1.5; TEMBER = 6.0;
 // Ignition time, captured once (t0 is the PRESET clock; this is the FIRE clock).
 per_frame_74=tlit = if(above(lit, 0.5), if(equal(tlit, 0), time, tlit), 0);
 per_frame_75=bel = if(above(lit, 0.5), time - tlit, 0);          // seconds since he caught
@@ -261,33 +261,80 @@ per_frame_79=q19 = st; q22 = hit;
 
 // --- SPARK PHYSICS: NO GRAVITY. These are embers off a fire, not debris -- they do not arc and
 // fall, they get taken by the rising heat and go UP. Three forces:
-//   BURST   the outward kick of the impact. It DIES with drag, so it only shapes the first moment.
-//   UPDRAFT a steady upward acceleration that takes over once the burst has bled off.
-//   WANDER  a slow sideways drift, unique per spark, so they do NOT rise in straight lines --
-//           straight-up embers look like a fountain; real ones curl and cross.
-per_frame_80=BURST = 1.0; DRAG = 3.2; UPDRAFT = 0.55; WANDER = 0.10; WFRQ = 2.4;
-per_frame_81=q24 = UPDRAFT; q27 = BURST; q28 = DRAG; q29 = WANDER; q30 = WFRQ;
-// --- AUDIO AS A SEED, captured ONCE at impact. A spark's randomness is a hash of its INDEX, which
-// is what keeps it on its own path instead of re-rolling every frame -- live audio in a spark's
-// POSITION would make the shower boil rather than fly. Mixing an audio snapshot into the hash gives
-// a burst that is different every RUN but fixed while it flies.
-per_frame_82=sseed = if(hit, if(equal(sseed, 0), 1 + bass*7.3 + treb*3.1 + time*0.37, sseed), 0);
-per_frame_83=q25 = sseed;
+//   BURST   the outward kick of the impact. DRAG bleeds it off, so it only shapes the first moment.
+//           Low drag is what SPACES them: the kick carries, so they separate early instead of
+//           leaving the joint as a clump.
+//   UPDRAFT a steady upward acceleration, scaled PER SPARK, so they climb at visibly different
+//           rates and the column frays instead of rising as a sheet.
+//   WANDER  a slow sideways drift, own frequency and phase per spark -- without it they rise in
+//           parallel lines like a fountain.
+// SCATTER spreads their birth POINTS around the joint so they do not all launch from one pixel.
+per_frame_80=BURST = 2.2; DRAG = 1.6; UPDRAFT = 0.75; WANDER = 0.30; SCATTER = 0.05;
+per_frame_81=NP = 1024; SPE = 170; PB = 1000; PS = 10;
+per_frame_82=dt = 1/max(1, fps); df = max(0, 1 - DRAG*dt);
+
+// --- EMISSION. Each emitter fires ONCE, when ITS body part reaches the ground: a part's height
+// collapses as GROUND + (jy-GROUND)*(1-fall), and fall is the SQUARE of linear progress, so invert
+// that and the landing time is TBURN + TFALL*sqrt(1 - EPS/height). A tall part crosses later than a
+// low one, so the stagger falls out of the collapse itself -- nothing to schedule. The one-shot flag
+// lives in gmegabuf(1+e), which is why an emitter cannot re-fire.
+//
+// This is a LOOP over the six emitters, not six copies, because pose() takes a plain joint NUMBER
+// and the ids are stored in gmegabuf(20+e).
+per_frame_83=e = 0;
+per_frame_84=loop(6,
+per_frame_85=  jid = gmegabuf(20+e); jx = pose(jid, POSE_X); jy = pose(jid, POSE_Y);
+per_frame_86=  hgt = max(0.03, jy - GROUND); tl = TBURN + TFALL*sqrt(max(0, 1 - 0.05/hgt));
+per_frame_87=  go = above(lit, 0.5) * above(bel, tl) * equal(gmegabuf(1+e), 0);
+per_frame_88=  if(go, (
+per_frame_89=    gmegabuf(1+e) = 1;
+per_frame_90=    k = 0;
+per_frame_91=    loop(SPE,
+per_frame_92=      c = gmegabuf(0); b = PB + c*PS;
+per_frame_93=      aa = rand(1)*6.2831853; sp = 0.05 + BURST*rand(1)*rand(1);
+per_frame_94=      gmegabuf(b)   = jx + (rand(1) - 0.5)*SCATTER*2;
+per_frame_95=      gmegabuf(b+1) = GROUND + 0.03 + (rand(1) - 0.5)*SCATTER;
+per_frame_96=      gmegabuf(b+2) = cos(aa)*sp; gmegabuf(b+3) = sin(aa)*sp;
+per_frame_97=      gmegabuf(b+4) = 0; gmegabuf(b+5) = 3.0 + 5.0*rand(1);
+per_frame_98=      gmegabuf(b+6) = rand(1); gmegabuf(b+7) = 0.55 + 0.45*rand(1);
+per_frame_99=      gmegabuf(b+8) = 0.20 + 1.80*rand(1); gmegabuf(b+9) = rand(1)*6.2831853;
+per_frame_100=      gmegabuf(0) = c + 1; k = k + 1;
+per_frame_101=    );
+per_frame_102=  ), 0);
+per_frame_103=  e = e + 1;
+per_frame_104=);
+
+// --- INTEGRATION. Every particle, every frame. Dead ones are integrated too (harmless, and cheaper
+// than branching 1024 times); the wave simply does not draw them.
+per_frame_105=i = 0;
+per_frame_106=loop(NP,
+per_frame_107=  b = PB + i*PS;
+per_frame_108=  wf = 1 + 3*gmegabuf(b+6);
+per_frame_109=  vx = gmegabuf(b+2)*df + WANDER*sin(time*wf + gmegabuf(b+9))*dt;
+per_frame_110=  vy = gmegabuf(b+3)*df + UPDRAFT*gmegabuf(b+8)*dt;
+per_frame_111=  gmegabuf(b+2) = vx; gmegabuf(b+3) = vy;
+per_frame_112=  gmegabuf(b)   = gmegabuf(b)   + vx*dt;
+per_frame_113=  gmegabuf(b+1) = gmegabuf(b+1) + vy*dt;
+per_frame_114=  gmegabuf(b+4) = gmegabuf(b+4) + dt;
+per_frame_115=  i = i + 1;
+per_frame_116=);
+
+// rand() gives real randomness now, so the audio SEED that used to vary the hashes is gone.
 // --- LIVE audio, safe to use: it flickers BRIGHTNESS, never position.
-per_frame_84=q26 = 0.75 + 0.55*treb_att;
+per_frame_117=q26 = 0.75 + 0.55*treb_att;
 // The fire clock and the fall timeline, for the per-emitter launches in the wave code. TBURN/TFALL
 // are PACKED into one q (only 32 exist and we are nearly out): q32 = TBURN*100 + TFALL, unpacked
 // with a floor() on the other side. Keeps the constants defined in exactly one place.
-per_frame_85=q31 = bel; q32 = TBURN*100 + TFALL;
+per_frame_118=q31 = bel; q32 = TBURN*100 + TFALL;
 // The strokes go BLACK quickly -- the body is spent; what you keep watching is what flew off it.
-per_frame_86=q20 = hit * max(0, 1 - st/TFADE) + (1 - hit);
+per_frame_119=q20 = hit * max(0, 1 - st/TFADE) + (1 - hit);
 // Spark life, and the white flash at the instant of contact (feeds the comp bloom).
 // The spark envelope closes right at the end. With only TEMBER = 2 s left, a long taper would dim
 // the burst while it is still climbing -- so hold it bright and pull it out over the last 0.5 s.
-per_frame_87=q21 = lit * min(1, max(0, (TBURN + TFALL + TEMBER - bel) / 0.5));
-per_frame_88=q23 = hit * exp(-st*5);
-per_frame_89=pcfall = above(bel, TBURN + TFALL + TEMBER);
-per_frame_90=preset_complete = if(above(lit, 0.5), pcfall, above(el, 17.5));
+per_frame_120=q21 = lit * min(1, max(0, (TBURN + TFALL + TEMBER - bel) / 0.5));
+per_frame_121=q23 = hit * exp(-st*5);
+per_frame_122=pcfall = above(bel, TBURN + TFALL + TEMBER);
+per_frame_123=preset_complete = if(above(lit, 0.5), pcfall, above(el, 17.5));
 
 // ======================= THE TELL: WARMTH =================================
 // The figure warms toward YELLOW as you close in on the pose. This is the whole feedback loop: it is
@@ -313,16 +360,22 @@ per_frame_90=preset_complete = if(above(lit, 0.5), pcfall, above(el, 17.5));
 // After the impact, everything goes to black: the burning trails held in the feedback buffer are
 // dumped by dropping decay hard (q22 = landed), so a couple of seconds after the sparks the screen
 // is dark and the preset hands off into nothing.
-per_frame_91=decay = (0.85 - 0.06*q2) * (1 - 0.22*q22);
-per_frame_92=zoom = 1.012 + 0.012*q2;
-per_frame_93=warp = 0.9*q2;
-per_frame_94=rot = 0.010*q2*sin(time*0.31);
-per_frame_95=wave_a = 0;
+// ONCE HE IS DOWN (q22), THE FEEDBACK STOPS. This is what makes the sparks read as SPARKS.
+// Every drawable lands in the warp/feedback buffer, which persists and is re-warped and re-zoomed
+// each frame -- so a fast-moving dot does not read as a dot, it smears into a streak, and 1024
+// streaks merge into "a few sparks with trails". Killing the persistence AND the motion after the
+// impact leaves each ember as an independent bright point that moves. The buffer is now a canvas
+// that is wiped ~every 3 frames rather than a long-exposure photograph.
+per_frame_124=decay = (0.85 - 0.06*q2) * (1 - 0.62*q22);
+per_frame_125=zoom = (1.012 + 0.012*q2) * (1 - q22) + q22;
+per_frame_126=warp = 0.9*q2 * (1 - q22);
+per_frame_127=rot = 0.010*q2*sin(time*0.31) * (1 - q22);
+per_frame_128=wave_a = 0;
 
 // The updraft: everything the Man burns off rises. (Y-DOWN, so up is negative dy.)
-per_pixel_1=dy = -0.008 * q2;
+per_pixel_1=dy = -0.008 * q2 * (1 - q22);
 // ...and fans outward as it rises, faster near the edges.
-per_pixel_2=dx = (x - 0.5) * 0.010 * q2;
+per_pixel_2=dx = (x - 0.5) * 0.010 * q2 * (1 - q22);
 per_pixel_3=warp = warp * (0.6 + 1.4*rad);
 
 // ======================= THE MAN: two Bezier strokes ======================
@@ -445,64 +498,57 @@ stroke_2_per_frame14=wr = 1; wg = 1; wb = 1;
 stroke_2_per_frame15=r = wr + (fr - wr)*q2; g = wg + (fg - wg)*q2; b = wb + (fb - wb)*q2; r2 = r; g2 = g; b2 = b;
 stroke_2_per_frame16=a = pose(JOINT_HEAD, POSE_CONF) * q3 * q8 * q9 * q20; a2 = a;
 
-// ======================= THE SPARKS (impact burst) ========================
-// The BIG sparks: a dozen streaks, one per instance of a single strokecode. Each is launched from the
-// point of impact at its own angle and speed, arcing up and then pulled back down by gravity. The
-// other ~500 sparks are dots, drawn by the custom wave below -- these twelve are the ones you can
-// actually see move, because a stroke can taper and stretch and a GL point cannot.
+// ======================= THE SPARKS: a real particle system ===============
+// These are no longer a closed-form hash. gmegabuf is PERSISTENT (created once per preset, never
+// cleared between frames) and is SHARED by every eval context -- per-frame, per-point, strokes all
+// receive the same buffer -- and it holds 128 x 65536 slots. So the sparks can carry real state:
+// per-frame integrates them, and the waveform below only DRAWS them.
 //
-// The randomness is a HASH of the instance index, not a random number: eval has no per-instance RNG,
-// and rand() would re-roll every frame and make each spark jitter instead of fly. frac(sin(i*k)*big)
-// is the standard trick -- deterministic per spark, so a spark keeps its own trajectory, but
-// scattered enough across instances to look unplanned.
+// What that buys over the hash: true rand() instead of sin-hashes, an independent lifetime per
+// spark, re-emission (an emitter can fire whenever it likes), and no pressure on the 32 q slots --
+// which are all spoken for.
 //
-// The streak is drawn from where the spark WAS (a moment ago) to where it IS, so it stretches with
-// speed: fast sparks are long, dying ones are short. That is free motion blur.
+// LAYOUT. 1024 particles, stride 10, based at 1000:
+//   +0 x   +1 y   +2 vx  +3 vy  +4 age  +5 life  +6 hue  +7 bright  +8 updraft  +9 wander phase
+// life = 0 means dead (or never spawned). Bookkeeping lives below 100:
+//   [0] ring cursor   [1..6] "emitter N has fired" one-shots   [20..25] each emitter's JOINT id
+//
+// gmegabuf survives ACROSS presets, so none of it can be assumed zero -- per_frame_init clears it.
+per_frame_init_1=gmegabuf(0) = 0;
+per_frame_init_2=i = 0; loop(6, gmegabuf(1+i) = 0; i = i + 1;);
+per_frame_init_3=i = 0; loop(1024, gmegabuf(1000 + i*10 + 5) = 0; i = i + 1;);
+// The six emitters, as JOINT ids. pose() takes a plain number, so the ids can be stored and looked
+// up -- which is what lets the emission below be a LOOP instead of six unrolled copies.
+// No feet: the ankles are already on the ground, so a foot emitter would fire at the START of the
+// fall, when he is still standing, and read as the ground erupting.
+per_frame_init_4=gmegabuf(20) = JOINT_L_WRIST; gmegabuf(21) = JOINT_R_WRIST; gmegabuf(22) = JOINT_L_SHOULDER;
+per_frame_init_5=gmegabuf(23) = JOINT_R_SHOULDER; gmegabuf(24) = JOINT_HEAD; gmegabuf(25) = JOINT_HEART;
+
+// A dozen STREAKS, drawn from the same particles -- the ones you can watch move. A stroke tapers and
+// stretches with speed; a GL point cannot. Each reads a particle and draws from where it WAS (one
+// step back along its own velocity) to where it IS, so a fast spark is long and a dying one is short.
+// That is free motion blur, and it costs nothing: the velocity is already stored.
 strokecode_3_enabled=1
 strokecode_3_additive=1
 strokecode_3_num_inst=12
-strokecode_3_segments=5
-// Per-spark constants, hashed from the instance index.
-stroke_3_per_frame1=i = instance; h1 = sin(i*12.9898 + 4.1 + q25*17.3)*43758.5453; h1 = h1 - floor(h1);
-stroke_3_per_frame2=h2 = sin(i*78.233 + 1.7 + q25*29.7)*43758.5453; h2 = h2 - floor(h2);
-stroke_3_per_frame3=h3 = sin(i*39.425 + 9.3 + q25*11.1)*43758.5453; h3 = h3 - floor(h3);
-stroke_3_per_frame4=h4 = sin(i*93.989 + 2.4 + q25*23.5)*43758.5453; h4 = h4 - floor(h4);
-stroke_3_per_frame5=ang = h1*6.2831853; spd = 0.18 + q27*h2*h2;
-stroke_3_per_frame6=ox = q6; oy = q18;
-// Two samples of the same path, 0.05 s apart: the streak is drawn from where the spark WAS to where
-// it IS, so it stretches with speed. Fast sparks are long, dying ones are short -- free motion blur.
-stroke_3_per_frame7=t = max(0, q19 - h3*0.06); tp = max(0, t - 0.05);
-stroke_3_per_frame8=up = q24 * (0.45 + 1.1*h4);
-stroke_3_per_frame9=bo = (1 - exp(-q28*t))  / q28; bp = (1 - exp(-q28*tp)) / q28;
-stroke_3_per_frame10=wo = q29 * sin(t *q30*(0.6 + 0.8*h1) + h2*6.2831853) * t  * (0.4 + h3);
-stroke_3_per_frame11=wp = q29 * sin(tp*q30*(0.6 + 0.8*h1) + h2*6.2831853) * tp * (0.4 + h3);
-stroke_3_per_frame12=x3 = ox + cos(ang)*spd*bo + wo; y3 = oy + sin(ang)*spd*bo + 0.5*up*t*t;
-stroke_3_per_frame13=x0 = ox + cos(ang)*spd*bp + wp; y0 = oy + sin(ang)*spd*bp + 0.5*up*tp*tp;
-// Straight streak: collinear controls.
-stroke_3_per_frame14=x1 = x0 + (x3-x0)/3; y1 = y0 + (y3-y0)/3;
-stroke_3_per_frame15=x2 = x0 + (x3-x0)*2/3; y2 = y0 + (y3-y0)*2/3;
-// Tapered: a point at the tail, thickest at the head.
-stroke_3_per_frame16=w0 = 0; wmid = 0.008; w1 = 0.016;
-// Tail deep red, head white-hot -- the streak IS the colour ramp.
-stroke_3_per_frame17=cool = exp(-t*1.5);
-stroke_3_per_frame18=r = 1; g = 0.10*cool; b = 0.0;
-stroke_3_per_frame19=r2 = 1; g2 = 0.85*cool; b2 = 0.55*cool*cool;
-stroke_3_per_frame20=sa = q21 * cool * (0.4 + 0.6*h2) * q26;
-stroke_3_per_frame21=a = sa * 0.5; a2 = sa;
+strokecode_3_segments=4
+stroke_3_per_frame1=p = instance*85; bi = 1000 + p*10;
+stroke_3_per_frame2=ag = gmegabuf(bi+4); lf = gmegabuf(bi+5); alive = above(lf, 0) * below(ag, lf);
+stroke_3_per_frame3=fr = min(1, ag / max(lf, 0.001)); hd = 0.55; dk = max(0, (fr - hd)/(1 - hd)); cool = 1 - dk*dk;
+stroke_3_per_frame4=px = gmegabuf(bi); py = gmegabuf(bi+1); vx = gmegabuf(bi+2); vy = gmegabuf(bi+3);
+stroke_3_per_frame5=x3 = px; y3 = py; x0 = px - vx*0.06; y0 = py - vy*0.06;
+stroke_3_per_frame6=x1 = x0 + (x3-x0)/3; y1 = y0 + (y3-y0)/3;
+stroke_3_per_frame7=x2 = x0 + (x3-x0)*2/3; y2 = y0 + (y3-y0)*2/3;
+// A point at the tail, thickest at the head.
+stroke_3_per_frame8=w0 = 0; wmid = 0.006; w1 = 0.014;
+stroke_3_per_frame9=hu = gmegabuf(bi+6);
+stroke_3_per_frame10=r = 1; g = 0.10*cool; b = 0.0;
+stroke_3_per_frame11=r2 = 1; g2 = min(1, (0.2 + 1.1*hu)*cool); b2 = min(1, 0.7*hu*hu*cool*cool);
+stroke_3_per_frame12=sa = alive * cool * gmegabuf(bi+7) * q21 * q26;
+stroke_3_per_frame13=a = sa*0.4; a2 = sa;
 
-// ======================= THE EMBER SHOWER (512 dots) ======================
-// The streaks above are only a dozen; the BULK of the burst is here -- 512 embers, drawn as a custom
-// waveform in DOT mode (bUseDots=1 -> GL_POINTS). This is the cheap way to get a real shower: 512
-// points is ONE draw call, where 512 stroke instances would be 512 of them.
-//
-// The per-point code ignores the audio entirely. `sample` (0..1) is just an index, and each point
-// hashes it into its own launch angle, speed and stagger -- so this is a particle system whose state
-// is a pure function of (spark index, time since impact). Nothing is stored between frames.
-//
-// COORDINATE GOTCHA: custom waves scale by invAspectX/invAspectY -- strokes and shapes do NOT. On a
-// wide screen that stretches wave Y by ~1.65, so y outside about 0.20..0.80 falls off-screen and the
-// ground (y = 0.1) would be invisible. q4/q5 (the reciprocal aspects) undo it exactly, which is what
-// the last line does. Get this wrong and the sparks silently vanish.
+// The waveform is now just a VIEW of the simulation: 512 dots reading 512 particles. Two of them
+// (this and the next) cover all 1024, in two draw calls.
 wavecode_0_enabled=1
 wavecode_0_samples=512
 wavecode_0_bSpectrum=0
@@ -512,129 +558,78 @@ wavecode_0_bAdditive=1
 wavecode_0_scaling=1.0
 wavecode_0_smoothing=0.0
 wavecode_0_a=1.0
-// Per-spark constants, hashed from the point index. Deterministic, so a spark keeps its own
-// trajectory frame to frame -- rand() would re-roll every frame and the shower would boil instead
-// of fly.
-wavecode_0_enabled=1
-wavecode_0_samples=512
-wavecode_0_bSpectrum=0
-wavecode_0_bUseDots=1
-wavecode_0_bDrawThick=1
-wavecode_0_bAdditive=1
-wavecode_0_scaling=1.0
-wavecode_0_smoothing=0.0
-wavecode_0_a=1.0
-// SIX EMITTERS, one per body part -- each throws its sparks as IT arrives at the ground. The head is
-// highest so it lands last; a dropped wrist lands early. The burst is a ragged SEQUENCE of impacts
-// rather than one synchronized pop.
-//
-// NO FEET. The feet are ALREADY on the ground -- an ankle emitter would fire at the START of the
-// fall, when the figure is still standing, and the sparks would read as the ground erupting instead
-// of a body landing on it. What tells you he is DOWN is the upper body arriving: wrists, shoulders,
-// head, chest.
-//
-// pose() is registered in the waveform per-point context, so the dots read the joints DIRECTLY --
-// no q-bridging needed for the emitters.
-wave_0_per_point1=i = sample*511; e = min(floor(i/85.34), 5);
-// Unpack the fall timeline (TBURN*100 + TFALL, packed into q32 -- only 32 q's exist and we are out).
-wave_0_per_point2=TB = floor(q32/100); TF = q32 - TB*100;
-// This emitter's joint: 0,1 = wrists, 2,3 = shoulders, 4 = head, 5 = chest.
-wave_0_per_point3=jx = if(equal(e,0), pose(JOINT_L_WRIST,POSE_X), if(equal(e,1), pose(JOINT_R_WRIST,POSE_X), if(equal(e,2), pose(JOINT_L_SHOULDER,POSE_X), if(equal(e,3), pose(JOINT_R_SHOULDER,POSE_X), if(equal(e,4), pose(JOINT_HEAD,POSE_X), pose(JOINT_HEART,POSE_X))))));
-wave_0_per_point4=jy = if(equal(e,0), pose(JOINT_L_WRIST,POSE_Y), if(equal(e,1), pose(JOINT_R_WRIST,POSE_Y), if(equal(e,2), pose(JOINT_L_SHOULDER,POSE_Y), if(equal(e,3), pose(JOINT_R_SHOULDER,POSE_Y), if(equal(e,4), pose(JOINT_HEAD,POSE_Y), pose(JOINT_HEART,POSE_Y))))));
-// WHEN does this part reach the ground? Its height collapses as GROUND + (jy-GROUND)*(1-fall), and
-// fall is the SQUARE of linear progress -- so invert it: the part is within EPS of the floor once
-// fall > 1 - EPS/height, i.e. at fire-clock time TB + TF*sqrt(that). A tall part crosses later than
-// a low one, so the stagger falls out of the collapse itself. Nothing to schedule.
-wave_0_per_point5=hgt = max(0.03, jy - q18); fl = max(0, 1 - 0.05/hgt);
-wave_0_per_point6=tl = TB + TF*sqrt(fl);
-// Per-spark constants, hashed from the point index (+ the audio seed q25, so every burst differs).
-// Deterministic: a spark keeps its own path frame to frame. rand() would re-roll it every frame and
-// the shower would boil in place instead of flying.
-wave_0_per_point7=h1 = sin(i*12.9898 + 4.1 + q25*17.3)*43758.5453; h1 = h1 - floor(h1);
-wave_0_per_point8=h2 = sin(i*78.233  + 1.7 + q25*29.7)*43758.5453; h2 = h2 - floor(h2);
-wave_0_per_point9=h3 = sin(i*39.425  + 9.3 + q25*11.1)*43758.5453; h3 = h3 - floor(h3);
-wave_0_per_point10=h4 = sin(i*93.989 + 2.4 + q25*23.5)*43758.5453; h4 = h4 - floor(h4);
-// This spark's age: time since ITS OWN emitter landed, plus a stagger so a batch trickles out.
-wave_0_per_point11=t = max(0, q31 - tl - h3*0.20); live = above(q31, tl);
-// BURST: a full 360 fan off the point of contact, bleeding away with drag.
-wave_0_per_point12=ang = h1*6.2831853; spd = 0.08 + q27*h2*h2*1.00;
-wave_0_per_point13=bo = (1 - exp(-q28*t)) / q28;
-// UPDRAFT, per spark, so the column frays instead of rising as a slab. No gravity: these are embers.
-wave_0_per_point14=up = q24 * (0.45 + 1.1*h4);
-// WANDER: a slow sideways sine, its own frequency and phase -- without it they rise in parallel lines.
-wave_0_per_point15=wob = q29 * sin(t*q30*(0.6 + 0.8*h1) + h2*6.2831853) * t * (0.4 + h3);
-wave_0_per_point16=xt = jx + cos(ang)*spd*bo + wob;
-wave_0_per_point17=yt = q18 + 0.04 + sin(ang)*spd*bo + 0.5*up*t*t;
-// Cooling: white-hot at contact, deep red as it climbs, then out. The fade IS the ember dying.
-wave_0_per_point18=cool = exp(-t*1.5);
-wave_0_per_point19=r = 1; g = 0.06 + 0.78*cool*(0.4 + 0.6*h2); b = 0.35*cool*cool*h1;
-// q26 is LIVE audio -- it flickers brightness with the music. Safe: it never touches position.
-wave_0_per_point20=a = q21 * live * cool * (0.25 + 0.75*h2) * q26;
+wave_0_per_point1=p = 0 + floor(sample*511); bi = 1000 + p*10;
+wave_0_per_point2=ag = gmegabuf(bi+4); lf = gmegabuf(bi+5);
+wave_0_per_point3=alive = above(lf, 0) * below(ag, lf);
+// A spark's own clock: 0 at birth, 1 at death. Every one has a different life, so they do not fade
+// in unison -- some wink out at once, a few ride all the way up.
+// The curve HOLDS then DROPS: (1 - fr^3) stays near 1 for most of the life and falls off a cliff at
+// the end. The obvious (1-fr)^2 does the opposite -- already at 25% by HALF the life, so every spark
+// was dim within a few frames of being born and 1024 of them looked like a handful. An ember glows
+// until it doesn't.
+// HOLD, then DECAY. hd is the fraction of a spark's life it stays at FULL brightness; after that
+// it tapers off quadratically over the rest. Two separate knobs on purpose -- an ember glows
+// steadily and THEN dies, it does not start dimming the instant it is born. (The obvious
+// (1-fr)^2 does exactly that: 25% brightness by half the life, so 1024 sparks looked like a
+// handful of dim ones.)
+wave_0_per_point4=fr = min(1, ag / max(lf, 0.001)); hd = 0.55;
+wave_0_per_point5=dk = max(0, (fr - hd)/(1 - hd)); cool = 1 - dk*dk;
+// Colour: each spark sits somewhere on the whole fire scale (its stored hue) -- deep red, orange,
+// yellow, white-hot, a few blue-white -- and slides DOWN that scale as it dies. A shower where every
+// ember is a different temperature reads as fire; one uniform colour reads as confetti.
+wave_0_per_point6=hu = gmegabuf(bi+6); gg = 0.12 + 1.15*hu*hu; bb = 0.75*hu*hu*hu*hu;
+wave_0_per_point7=r = min(1, 0.55 + 0.6*cool); g = min(1, gg*cool); b = min(1, bb*cool*cool);
+// FLICKER, per point: value1 is the LEFT PCM sample at this point, so every spark reads a DIFFERENT
+// slice of the waveform and they twinkle independently instead of pulsing together like one lamp on
+// a dimmer (which is what a single global multiplier such as q26 gives you). Safe: it touches only
+// brightness, never position -- audio in a particle's POSITION would re-roll its path every frame.
+wave_0_per_point8=fl = 0.75 + 3.0*abs(value1);
+wave_0_per_point9=a = alive * gmegabuf(bi+7) * cool * q21 * fl;
 // Undo the wave's aspect scaling (waves scale by invAspect; strokes do NOT), or the sparks silently
-// fall off-screen -- on a wide screen wave y outside ~0.20..0.80 is not even drawn.
-wave_0_per_point21=x = 0.5 + (xt - 0.5)*q4; y = 0.5 + (yt - 0.5)*q5;
+// fall off-screen: on a wide screen wave y outside ~0.20..0.80 is not even drawn.
+wave_0_per_point10=x = 0.5 + (gmegabuf(bi) - 0.5)*q4; y = 0.5 + (gmegabuf(bi+1) - 0.5)*q5;
 
-// A SECOND 512 -- 1024 embers, still only two draw calls. Same physics, different seed offsets,
-// and finer/dimmer/longer-lived: a haze of small sparks behind the bright ones, not a visible
-// second copy.
+// The waveform is now just a VIEW of the simulation: 512 dots reading 512 particles. Two of them
+// (this and the next) cover all 1024, in two draw calls.
 wavecode_1_enabled=1
 wavecode_1_samples=512
 wavecode_1_bSpectrum=0
 wavecode_1_bUseDots=1
-wavecode_1_bDrawThick=0
+wavecode_1_bDrawThick=1
 wavecode_1_bAdditive=1
 wavecode_1_scaling=1.0
 wavecode_1_smoothing=0.0
 wavecode_1_a=1.0
-// SIX EMITTERS, one per body part -- each throws its sparks as IT arrives at the ground. The head is
-// highest so it lands last; a dropped wrist lands early. The burst is a ragged SEQUENCE of impacts
-// rather than one synchronized pop.
-//
-// NO FEET. The feet are ALREADY on the ground -- an ankle emitter would fire at the START of the
-// fall, when the figure is still standing, and the sparks would read as the ground erupting instead
-// of a body landing on it. What tells you he is DOWN is the upper body arriving: wrists, shoulders,
-// head, chest.
-//
-// pose() is registered in the waveform per-point context, so the dots read the joints DIRECTLY --
-// no q-bridging needed for the emitters.
-wave_1_per_point1=i = sample*511; e = min(floor(i/85.34), 5);
-// Unpack the fall timeline (TBURN*100 + TFALL, packed into q32 -- only 32 q's exist and we are out).
-wave_1_per_point2=TB = floor(q32/100); TF = q32 - TB*100;
-// This emitter's joint: 0,1 = wrists, 2,3 = shoulders, 4 = head, 5 = chest.
-wave_1_per_point3=jx = if(equal(e,0), pose(JOINT_L_WRIST,POSE_X), if(equal(e,1), pose(JOINT_R_WRIST,POSE_X), if(equal(e,2), pose(JOINT_L_SHOULDER,POSE_X), if(equal(e,3), pose(JOINT_R_SHOULDER,POSE_X), if(equal(e,4), pose(JOINT_HEAD,POSE_X), pose(JOINT_HEART,POSE_X))))));
-wave_1_per_point4=jy = if(equal(e,0), pose(JOINT_L_WRIST,POSE_Y), if(equal(e,1), pose(JOINT_R_WRIST,POSE_Y), if(equal(e,2), pose(JOINT_L_SHOULDER,POSE_Y), if(equal(e,3), pose(JOINT_R_SHOULDER,POSE_Y), if(equal(e,4), pose(JOINT_HEAD,POSE_Y), pose(JOINT_HEART,POSE_Y))))));
-// WHEN does this part reach the ground? Its height collapses as GROUND + (jy-GROUND)*(1-fall), and
-// fall is the SQUARE of linear progress -- so invert it: the part is within EPS of the floor once
-// fall > 1 - EPS/height, i.e. at fire-clock time TB + TF*sqrt(that). A tall part crosses later than
-// a low one, so the stagger falls out of the collapse itself. Nothing to schedule.
-wave_1_per_point5=hgt = max(0.03, jy - q18); fl = max(0, 1 - 0.05/hgt);
-wave_1_per_point6=tl = TB + TF*sqrt(fl);
-// Per-spark constants, hashed from the point index (+ the audio seed q25, so every burst differs).
-// Deterministic: a spark keeps its own path frame to frame. rand() would re-roll it every frame and
-// the shower would boil in place instead of flying.
-wave_1_per_point7=h1 = sin(i*12.9898 + 7.7 + q25*17.3)*43758.5453; h1 = h1 - floor(h1);
-wave_1_per_point8=h2 = sin(i*78.233  + 3.3 + q25*29.7)*43758.5453; h2 = h2 - floor(h2);
-wave_1_per_point9=h3 = sin(i*39.425  + 5.9 + q25*11.1)*43758.5453; h3 = h3 - floor(h3);
-wave_1_per_point10=h4 = sin(i*93.989 + 8.8 + q25*23.5)*43758.5453; h4 = h4 - floor(h4);
-// This spark's age: time since ITS OWN emitter landed, plus a stagger so a batch trickles out.
-wave_1_per_point11=t = max(0, q31 - tl - h3*0.20); live = above(q31, tl);
-// BURST: a full 360 fan off the point of contact, bleeding away with drag.
-wave_1_per_point12=ang = h1*6.2831853; spd = 0.08 + q27*h2*h2*0.65;
-wave_1_per_point13=bo = (1 - exp(-q28*t)) / q28;
-// UPDRAFT, per spark, so the column frays instead of rising as a slab. No gravity: these are embers.
-wave_1_per_point14=up = q24 * (0.45 + 1.1*h4);
-// WANDER: a slow sideways sine, its own frequency and phase -- without it they rise in parallel lines.
-wave_1_per_point15=wob = q29 * sin(t*q30*(0.6 + 0.8*h1) + h2*6.2831853) * t * (0.4 + h3);
-wave_1_per_point16=xt = jx + cos(ang)*spd*bo + wob;
-wave_1_per_point17=yt = q18 + 0.04 + sin(ang)*spd*bo + 0.5*up*t*t;
-// Cooling: white-hot at contact, deep red as it climbs, then out. The fade IS the ember dying.
-wave_1_per_point18=cool = exp(-t*1.0);
-wave_1_per_point19=r = 1; g = 0.06 + 0.78*cool*(0.4 + 0.6*h2); b = 0.35*cool*cool*h1;
-// q26 is LIVE audio -- it flickers brightness with the music. Safe: it never touches position.
-wave_1_per_point20=a = q21 * live * cool * (0.10 + 0.45*h2) * q26;
+wave_1_per_point1=p = 512 + floor(sample*511); bi = 1000 + p*10;
+wave_1_per_point2=ag = gmegabuf(bi+4); lf = gmegabuf(bi+5);
+wave_1_per_point3=alive = above(lf, 0) * below(ag, lf);
+// A spark's own clock: 0 at birth, 1 at death. Every one has a different life, so they do not fade
+// in unison -- some wink out at once, a few ride all the way up.
+// The curve HOLDS then DROPS: (1 - fr^3) stays near 1 for most of the life and falls off a cliff at
+// the end. The obvious (1-fr)^2 does the opposite -- already at 25% by HALF the life, so every spark
+// was dim within a few frames of being born and 1024 of them looked like a handful. An ember glows
+// until it doesn't.
+// HOLD, then DECAY. hd is the fraction of a spark's life it stays at FULL brightness; after that
+// it tapers off quadratically over the rest. Two separate knobs on purpose -- an ember glows
+// steadily and THEN dies, it does not start dimming the instant it is born. (The obvious
+// (1-fr)^2 does exactly that: 25% brightness by half the life, so 1024 sparks looked like a
+// handful of dim ones.)
+wave_1_per_point4=fr = min(1, ag / max(lf, 0.001)); hd = 0.55;
+wave_1_per_point5=dk = max(0, (fr - hd)/(1 - hd)); cool = 1 - dk*dk;
+// Colour: each spark sits somewhere on the whole fire scale (its stored hue) -- deep red, orange,
+// yellow, white-hot, a few blue-white -- and slides DOWN that scale as it dies. A shower where every
+// ember is a different temperature reads as fire; one uniform colour reads as confetti.
+wave_1_per_point6=hu = gmegabuf(bi+6); gg = 0.12 + 1.15*hu*hu; bb = 0.75*hu*hu*hu*hu;
+wave_1_per_point7=r = min(1, 0.55 + 0.6*cool); g = min(1, gg*cool); b = min(1, bb*cool*cool);
+// FLICKER, per point: value1 is the LEFT PCM sample at this point, so every spark reads a DIFFERENT
+// slice of the waveform and they twinkle independently instead of pulsing together like one lamp on
+// a dimmer (which is what a single global multiplier such as q26 gives you). Safe: it touches only
+// brightness, never position -- audio in a particle's POSITION would re-roll its path every frame.
+wave_1_per_point8=fl = 0.75 + 3.0*abs(value1);
+wave_1_per_point9=a = alive * gmegabuf(bi+7) * cool * q21 * fl;
 // Undo the wave's aspect scaling (waves scale by invAspect; strokes do NOT), or the sparks silently
-// fall off-screen -- on a wide screen wave y outside ~0.20..0.80 is not even drawn.
-wave_1_per_point21=x = 0.5 + (xt - 0.5)*q4; y = 0.5 + (yt - 0.5)*q5;
+// fall off-screen: on a wide screen wave y outside ~0.20..0.80 is not even drawn.
+wave_1_per_point10=x = 0.5 + (gmegabuf(bi) - 0.5)*q4; y = 0.5 + (gmegabuf(bi+1) - 0.5)*q5;
 
 warp_1=`shader_body
 warp_2=`{
