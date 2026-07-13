@@ -56,18 +56,16 @@ shader_body
     ret = GetMain(frac(t + slide)) * 0.8;
 
     // THE TROUPE AND THE BAD DANCER.
-    // Three quadrants are ALMOST together -- an eighth of a beat apart, so they read as a tight
-    // group that ripples rather than four separate people. The fourth is hopeless: a whole bar
-    // behind, still doing the last move. Which one is the bad dancer is chosen from rand_preset,
-    // which is fixed for the lifetime of the preset -- so it's a different dancer each run.
+    // Three quadrants are in PERFECT sync -- identical, same instant, one body in three places.
+    // That's the whole setup for the joke: with the good dancers locked together there is nothing
+    // to look at except the one who isn't. Which quadrant is the bad dancer is chosen from
+    // rand_preset, fixed for the lifetime of the preset -- so it's a different dancer each run.
     //
     // age 0..1 spans video_buffer_seconds of history, so beats are converted into buffer age.
     // Fallbacks: 120 BPM until the beat tracker locks, 4s until the history buffer reports.
     float bpm_   = (beat_bpm > 1.0) ? beat_bpm : 120.0;
     float beat_  = 60.0 / bpm_;                       // seconds per beat
     float buf_   = (video_buffer_seconds > 0.01) ? video_buffer_seconds : 4.0;
-
-    float tight_ = (0.125 * beat_) / buf_;            // the three who can (nearly) keep time
 
     // The bad dancer is LATE, not lost. A full bar behind made him look like he was doing a
     // different dance entirely; ~1.5 beats keeps him visibly chasing the same moves -- and it
@@ -88,20 +86,16 @@ shader_body
     float qm_    = fmod(abs(qi), 4.0);
     float rid_   = floor(rand_preset.x * 3.9999);     // which quadrant is the bad dancer
 
-    // The three who keep time are close but NOT identical, and not evenly spaced either: an
-    // even 1/8-beat ladder reads as a metronome, which is the wrong joke. jit_ (fixed per run,
-    // from rand_preset) scatters them 0.5x-1.5x around their nominal offset, so they land just
-    // slightly off each other -- human-sloppy rather than quantised.
-    float jit_   = 0.5 + frac(rand_preset.y * (qm_ + 1.0) * 7.3);
+    // The good dancers all read age 0 -- the live frame, no offset, no jitter. Only the rogue
+    // is anywhere else in the buffer.
+    float age    = (abs(qm_ - rid_) < 0.5) ? rogue_ : 0.0;
 
-    float age    = (abs(qm_ - rid_) < 0.5) ? rogue_ : saturate(qm_ * tight_ * jit_);
-
-    // MIRROR THE TROUPE: flip every other COLUMN, so the dancers face each other instead of
-    // all facing the same way -- four clones become a formation. Only the video lookup is
-    // mirrored, not the recursive backdrop: the dancer's body flips, the feedback behind it
-    // stays coherent (mirroring that too would flip again at every nesting level).
-    // abs() because the wobbling seams (q3,q4) push q outside 0..3.
-    float mir_ = fmod(abs(q.x), 2.0);                 // 1 on every other column
+    // MIRROR THE TROUPE: flip every other COLUMN so the dancers face each other. It makes a
+    // handsome formation, but it also hides the joke -- a mirrored good dancer no longer looks
+    // like the same person as his neighbour, so the odd one out stops standing out. Off by
+    // default; set to 1 to get the formation back.
+    float mirror_ = 0.0;
+    float mir_ = mirror_ * fmod(abs(q.x), 2.0);       // 1 on every other column
     float2 tv  = float2(lerp(t.x, 1.0 - t.x, mir_), t.y);
 
     float4 v    = GetVideo(tv, age);
