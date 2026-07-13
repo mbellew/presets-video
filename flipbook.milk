@@ -101,30 +101,52 @@ per_frame_12=blanked = if(blank, 1, blanked);
 per_frame_13=q6 = blank;                                   // shaders: bake / show blank pages
 per_frame_14=q4 = if(blank, 0, max(0, min((age - THOLD) / TZOOM, 1)));  // zoom (0 once blank)
 
+// --- ZOOM FOCAL POINT: the performer's CHEST, when the pose is trustworthy ---
+// The end-of-life zoom pushes the source video in toward the subject (the warp shader does the
+// magnifying; this only decides WHERE). seg_cx/seg_cy -- the segmentation centroid -- is the
+// fallback, but the centroid of a whole body lands at the BELLY, so the zoom ends on the waist
+// rather than the person. pose(JOINT_HEART) is the chest, which is what you actually want to end on.
+//
+// So: use the heart when the pose model is confident about it, and fall back to the centroid when
+// it is not. The EMA below then coasts on the last good value through a brief dropout instead of
+// snapping back to the belly.
+// pose() Y is bottom-up and the page uv is top-down, so flip it. seg_cy is bottom-up too.
+per_frame_15=hconf = pose(JOINT_HEART, POSE_CONF);
+per_frame_16=seen = above(hconf, 0.3);
+per_frame_17=tfx = if(seen, pose(JOINT_HEART, POSE_X), seg_cx);
+per_frame_18=tfy = if(seen, 1 - pose(JOINT_HEART, POSE_Y), 1 - seg_cy);
+// EMA-smoothed: a jittery focal makes the zoom swim. Slow enough to be steady, fast enough to
+// follow someone walking.
+per_frame_19=fx = fx + (tfx - fx) * 0.12;
+per_frame_20=fy = fy + (tfy - fy) * 0.12;
+// Keep the crop on the page -- a focal at the very edge would zoom into blank margin.
+per_frame_21=q2 = min(max(fx, 0.15), 0.85);   // warp: focal x
+per_frame_22=q5 = min(max(fy, 0.15), 0.85);   // warp: focal y
+
 // --- flip cadence ---
 // When the beat tracker is CONFIDENT (beat_conf), sync page turns to beat_onset
 // (debounced by PMIN, with a PMAX fallback so it never stalls). When confidence is
 // low, ignore beats and turn on a steady 0.4s. The blank end-flurry stays fast+fixed.
-per_frame_15=FW = 0.15;                  // page-turn duration
-per_frame_16=PMIN = 0.18;                // min seconds between beat-triggered flips
-per_frame_17=PMAX = 1.2;                 // turn anyway if this long passes with no beat
-per_frame_18=hiconf = above(beat_conf, 0.5);                       // beat tracker confident?
-per_frame_19=ncbeat = above(beat_onset, 0.5) * above(time - last_t, PMIN);
-per_frame_20=ncsync = max(ncbeat, above(time - last_t, PMAX));     // beat mode (+ silence fallback)
-per_frame_21=ncsteady = above(time - last_t, 0.4);                 // low-confidence steady cadence
-per_frame_22=nc = if(blank, above(time - last_t, 0.28), if(hiconf, ncsync, ncsteady));
+per_frame_23=FW = 0.15;                  // page-turn duration
+per_frame_24=PMIN = 0.18;                // min seconds between beat-triggered flips
+per_frame_25=PMAX = 1.2;                 // turn anyway if this long passes with no beat
+per_frame_26=hiconf = above(beat_conf, 0.5);                       // beat tracker confident?
+per_frame_27=ncbeat = above(beat_onset, 0.5) * above(time - last_t, PMIN);
+per_frame_28=ncsync = max(ncbeat, above(time - last_t, PMAX));     // beat mode (+ silence fallback)
+per_frame_29=ncsteady = above(time - last_t, 0.4);                 // low-confidence steady cadence
+per_frame_30=nc = if(blank, above(time - last_t, 0.28), if(hiconf, ncsync, ncsteady));
 // Also start a fresh page-turn (reset last_t) on the FIRST blank frame, so the
 // zoomed page cuts straight into a blank turn (no un-zoomed filtered frame flashes).
-per_frame_23=last_t = if(max(nc, enterblank), time, last_t);
-per_frame_24=u = time - last_t;                   // time since this page turn began
-per_frame_25=q1 = max(max(nc, enterblank), below(age, 0.06));  // warp: bake a new page now (age is per-preset; frame is global)
-per_frame_26=q3 = min(u / FW, 1) * 1.5708;        // comp: page-turn angle 0..pi/2
+per_frame_31=last_t = if(max(nc, enterblank), time, last_t);
+per_frame_32=u = time - last_t;                   // time since this page turn began
+per_frame_33=q1 = max(max(nc, enterblank), below(age, 0.06));  // warp: bake a new page now (age is per-preset; frame is global)
+per_frame_34=q3 = min(u / FW, 1) * 1.5708;        // comp: page-turn angle 0..pi/2
 
 // --- end after the blank flurry (ONE-SHOT: preset_complete is a latch the engine
 // clears each frame; assert it for exactly one frame so it switches once cleanly) ---
-per_frame_27=done = above(age, zend + TBLANK + 0.2);
-per_frame_28=preset_complete = done * equal(fired, 0);
-per_frame_29=fired = if(done, 1, fired);
+per_frame_35=done = above(age, zend + TBLANK + 0.2);
+per_frame_36=preset_complete = done * equal(fired, 0);
+per_frame_37=fired = if(done, 1, fired);
 
 warp_1=```
 // Shared helpers. NOTE: a helper may use GetVideo/MaskSeg/texsize (they expand to
@@ -199,11 +221,12 @@ shader_body
         // scale and the style stays consistent -- only the content zooms. suv keeps the original
         // screen coord for those screen-space overlays; every GetVideo/MaskSeg below now reads the
         // zoomed uv. This bakes into the page, so the zoom advances one step per page-flip.
-        // seg_cx/seg_cy are library uniforms (smoothed, mirror-corrected, ease to centre with no
-        // subject); seg_cy is bottom-up, so flip it for this top-down uv.
+        // (q2, q5) is the focal point chosen in per-frame: the performer's CHEST via
+        // pose(JOINT_HEART) when the pose model is confident about it, easing back to the
+        // segmentation centroid when it is not. Already smoothed, clamped and y-flipped there.
         float2 suv = uv;
         float zoom_ = 1.0 + q4 * q4 * 8.0;
-        float2 fv_ = clamp(float2(seg_cx, 1.0 - seg_cy), float2(0.15, 0.15), float2(0.85, 0.85));
+        float2 fv_ = float2(q2, q5);
         uv = fv_ + (uv - fv_) / zoom_;
         if (filt_ == 0)
         {
