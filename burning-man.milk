@@ -220,9 +220,10 @@ per_frame_66=ig = ig + (lit - ig) * min(1, dt/1.5);
 per_frame_67=q2 = ig;
 per_frame_68=q10 = lit;
 per_frame_69=q11 = max(0, lit - ig);
-// The 15 s clock: if you never matched, fade out over 2 s and hand the playlist back via
-// preset_complete. Ignition cancels it -- once you are the Man, the preset is yours.
-per_frame_70=q8 = if(above(lit, 0.5), 1, 1 - min(1, max(0, (el - 15)/2)));
+// The 14 s clock: if you never matched, fade out over 2 s and hand the playlist back via
+// preset_complete. Ignition cancels it -- once you are the Man, the preset is yours. The fade must
+// LAND before preset_complete (el 16.5), or the preset cuts while it is still half on screen.
+per_frame_70=q8 = if(above(lit, 0.5), 1, 1 - min(1, max(0, (el - 14)/2)));
 per_frame_71=q9 = 1;
 
 // ======================= THE COLLAPSE =====================================
@@ -243,7 +244,7 @@ per_frame_72=TBURN = 10; TFALL = 5; GROUND = 0.1;
 // ground, which IS the end of the collapse (TBURN + TFALL). So the preset ends at TEMBER seconds
 // past the final impact, with the embers still climbing as it hands off. (TSPARK is now vestigial:
 // a spark dies by COOLING, not on a timer.)
-per_frame_73=TSPARK = 2.5; TFADE = 1.5; TEMBER = 6.0;
+per_frame_73=TSPARK = 2.5; TFADE = 1.5; TEMBER = 5.0;
 // Ignition time, captured once (t0 is the PRESET clock; this is the FIRE clock).
 per_frame_74=tlit = if(above(lit, 0.5), if(equal(tlit, 0), time, tlit), 0);
 per_frame_75=bel = if(above(lit, 0.5), time - tlit, 0);          // seconds since he caught
@@ -329,12 +330,16 @@ per_frame_118=q31 = bel; q32 = TBURN*100 + TFALL;
 // The strokes go BLACK quickly -- the body is spent; what you keep watching is what flew off it.
 per_frame_119=q20 = hit * max(0, 1 - st/TFADE) + (1 - hit);
 // Spark life, and the white flash at the instant of contact (feeds the comp bloom).
-// The spark envelope closes right at the end. With only TEMBER = 2 s left, a long taper would dim
-// the burst while it is still climbing -- so hold it bright and pull it out over the last 0.5 s.
-per_frame_120=q21 = lit * min(1, max(0, (TBURN + TFALL + TEMBER - bel) / 0.5));
+// NO end-of-life taper. This used to pull the spark alpha to zero over the last 0.5 s, so the preset
+// handed off to a BLACK screen and the transition had nothing to hold. The sparks are still alive at
+// the cut -- the last emitters fire around ignition+14.7 s and a spark lives 3-8 s, so a few hundred
+// are still climbing when preset_complete fires at ignition+20 -- they were only being multiplied
+// out. Let them burn: a spark dies by COOLING (see `cool`), and the embers still on screen are
+// exactly what the transition gets to grab.
+per_frame_120=q21 = lit;
 per_frame_121=q23 = hit * exp(-st*5);
 per_frame_122=pcfall = above(bel, TBURN + TFALL + TEMBER);
-per_frame_123=preset_complete = if(above(lit, 0.5), pcfall, above(el, 17.5));
+per_frame_123=preset_complete = if(above(lit, 0.5), pcfall, above(el, 16.5));
 
 // ======================= THE TELL: WARMTH =================================
 // The figure warms toward YELLOW as you close in on the pose. This is the whole feedback loop: it is
