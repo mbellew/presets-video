@@ -1,0 +1,214 @@
+// DISSOLVE - a fast-moving limb sheds molten lava-lamp blobs that detach, drift and are
+// carried away, re-forming when you hold still. The SHAPE of the shed reads the gesture:
+//   - a hand thrust IN LINE with the arm  -> a thin STREAK of blobs along the path
+//   - an arm SWEEP across the arm axis     -> a wide FIELD of blobs (if fast enough)
+// After Lozano-Hemmer's "Treachery of Sanctuary", but the material is lava, not birds.
+//
+// MECHANISM (a feedback density field kept in the ALPHA state channel -- GetState / ret_a --
+// so the whole simulation lives at full res without touching the displayed RGB):
+//   - EMISSION: each hand paints a CAPSULE along the segment it swept THIS frame. The capsule
+//     RADIUS grows with how perpendicular the motion is to the arm (sweep = wide, thrust = thin);
+//     its STRENGTH scales with hand speed (slow = nothing, fast = solid). A weak seg-edge x motion
+//     term still sheds from general body movement when pose is unavailable. Suppressed near the head.
+//   - ADVECTION + CONSOLIDATION: the field is advected along a flow from TIME-WARPED smooth 3D noise
+//     (noisevol_hq, 3rd axis driven by time): down the gradient (density slides into wells and CLUMPS
+//     into rounded blobs -- the noise is the blobs' gravity), plus swirl (curl), plus buoyant rise and
+//     an outward push so lumps leave the body and detach. The wells drift as the noise animates, so the
+//     blobs morph like a lava lamp.
+//   - SLOW DECAY: the field persists (~2s), so blobs are carried well away before they fade.
+//   - The comp thresholds the field into rounded lava blobs and draws the figure solid on top.
+//
+// NOTE: uv.y = 0 is the TOP; pose() Y is bottom-up, so flip it (1 - Y).
+[preset00]
+MILKDROP_PRESET_VERSION=201
+PSVERSION=2
+PSVERSION_WARP=2
+PSVERSION_COMP=2
+fRating=2.000000
+
+// We do our own advection/decay in the warp shader, so keep the built-in transform identity.
+fDecay=1
+zoom=1.002
+rot=0.004
+cx=0.5
+cy=0.5
+dx=0
+dy=0
+warp=0
+sx=1
+sy=1
+fWaveEnable=0
+wave_a=0
+
+per_frame_init_1=pstart = -1;
+per_frame_init_2=plwx = 0.5; plwy = 0.5;
+per_frame_init_3=prwx = 0.5; prwy = 0.5;
+
+// Straight video copy.
+per_frame_1=video_alpha_mode = 0;
+per_frame_2=video_alpha_value = 1.0;
+per_frame_3=video_alpha_init = 0.0;
+
+per_frame_4=pstart = if(below(pstart, 0), time, pstart);
+per_frame_5=age = time - pstart;
+
+// --- field dynamics (all tunable) ---
+per_frame_6=q1 = time * 0.14;    // noise 3rd-axis scroll -- the "time warp" animating the flow
+per_frame_7=q2 = 0.06;           // seg-edge base emit (general body motion; weak)
+per_frame_8=q3 = 0.997;          // MUCH slower COLOR (RGB) decay -- blobs persist long after forming (drift off-frame is the sink)
+per_frame_9=q4 = 0.0;            // noise consolidation OFF -- THIS was the "background warp" (beads come from the emission mask now)
+per_frame_10=q5 = 0.0015;        // background-current RISE (drifts the committed blobs up and eventually off-frame)
+per_frame_11=q8 = 0.0;           // TEST: swirl OFF -- kill the "pattern warping" (was 0.0022)
+per_frame_12=q10 = 0.0;          // TEST: outward push OFF (was 0.0026)
+per_frame_13=q9 = below(age, 0.12);   // startup clear
+
+// --- head focal (keep the face out of the dissolve): pose head, else seg top ---
+per_frame_14=hconf = pose(JOINT_HEAD, POSE_CONF);
+per_frame_15=q6 = if(above(hconf, 0.3), pose(JOINT_HEAD, POSE_X), seg_cx);
+per_frame_16=q7 = if(above(hconf, 0.3), 1 - pose(JOINT_HEAD, POSE_Y), 1 - seg_cy - 0.20);
+
+// seg centroid (top-down) for the outward push
+per_frame_17=q11 = seg_cx; q12 = 1 - seg_cy;
+
+// --- LEFT hand: capsule along the path swept THIS frame, shaped by the gesture ---
+per_frame_18=lwc = pose(JOINT_L_WRIST, POSE_CONF); lok = above(lwc, 0.3);
+per_frame_19=lwx = if(lok, pose(JOINT_L_WRIST, POSE_X), plwx); lwy = if(lok, 1 - pose(JOINT_L_WRIST, POSE_Y), plwy);
+per_frame_20=lsx = pose(JOINT_L_SHOULDER, POSE_X); lsy = 1 - pose(JOINT_L_SHOULDER, POSE_Y);
+per_frame_21=ldx = lwx - plwx; ldy = lwy - plwy; lspeed = sqrt(ldx*ldx + ldy*ldy);
+per_frame_22=lax = lwx - lsx; lay = lwy - lsy; laL = sqrt(lax*lax + lay*lay) + 0.0001;
+per_frame_23=lmi = lspeed + 0.00001; lmx = ldx/lmi; lmy = ldy/lmi;
+// cross of motion dir with arm dir: 0 = along the arm (thrust), 1 = across it (sweep)
+per_frame_24=lacross = abs(lmx*(lay/laL) - lmy*(lax/laL));
+per_frame_25=q17 = 0.020 + lacross * 0.090;                 // thin streak -> wide field
+per_frame_26=q18 = if(lok, min(max((lspeed - 0.004)/0.026, 0), 1), 0);   // fast enough?
+per_frame_27=q13 = plwx; q14 = plwy; q15 = lwx; q16 = lwy;  // capsule endpoints (prev -> now)
+per_frame_28=plwx = lwx; plwy = lwy;
+
+// --- RIGHT hand ---
+per_frame_29=rwc = pose(JOINT_R_WRIST, POSE_CONF); rok = above(rwc, 0.3);
+per_frame_30=rwx = if(rok, pose(JOINT_R_WRIST, POSE_X), prwx); rwy = if(rok, 1 - pose(JOINT_R_WRIST, POSE_Y), prwy);
+per_frame_31=rsx = pose(JOINT_R_SHOULDER, POSE_X); rsy = 1 - pose(JOINT_R_SHOULDER, POSE_Y);
+per_frame_32=rdx = rwx - prwx; rdy = rwy - prwy; rspeed = sqrt(rdx*rdx + rdy*rdy);
+per_frame_33=rax = rwx - rsx; ray = rwy - rsy; raL = sqrt(rax*rax + ray*ray) + 0.0001;
+per_frame_34=rmi = rspeed + 0.00001; rmx = rdx/rmi; rmy = rdy/rmi;
+per_frame_35=racross = abs(rmx*(ray/raL) - rmy*(rax/raL));
+per_frame_36=q23 = 0.020 + racross * 0.090;
+per_frame_37=q24 = if(rok, min(max((rspeed - 0.004)/0.026, 0), 1), 0);
+per_frame_38=q19 = prwx; q20 = prwy; q21 = rwx; q22 = rwy;
+per_frame_39=prwx = rwx; prwy = rwy;
+
+// --- lateral inhibition (consolidation with GAPS): a difference-of-Gaussians term. Each point is
+// compared to its ring average; peaks grow and the troughs between blobs deepen, so a broad
+// activated patch breaks into discrete blobs separated by gaps. Radius sets the blob/gap scale. ---
+per_frame_40=q25 = 0.0;          // DoG lateral inhibition OFF -- it self-oscillated into a zebra field
+per_frame_41=q26 = 0.024;        // inhibition ring radius (blob + gap scale)
+per_frame_42=q27 = 0.85;         // noise feature scale: SMALLER = attractor wells FURTHER apart
+per_frame_43=q28 = 0.0;          // zoom transport OFF for now (currents come next phase)
+per_frame_44=q29 = 0.30;         // (c) SURFACE TENSION strength (MBO) -- faster now that blobs are bigger/bolder
+per_frame_45=q30 = 0.0;          // (free)
+per_frame_46=q31 = 0.0;          // double-well PINCH OFF -- self-amplified into static
+per_frame_47=q32 = 0.85;         // ACTIVATION multiplicative fade (quick but not instant; lower = faster)
+
+warp_1=```
+// distance from p to the segment a-b (the hand's path this frame)
+float SegDist(float2 p, float2 a, float2 b)
+{
+    float2 pa = p - a;
+    float2 ba = b - a;
+    float t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    return length(pa - ba * t);
+}
+
+shader_body
+{
+    float axm = texsize.y / texsize.x;
+
+    // ===== FEEDBACK is moved by the BUILT-IN slow zoom/rotate: sample at 'uv' (the mesh-warped
+    // coord). Both the committed RGB blobs AND the activation ride it, so they migrate TOGETHER.
+    // ('uv_orig' is this pixel's raw screen position, used for emission/mask below.) =====
+    float2 rX = float2(q26 * axm, 0.0);
+    float2 rY = float2(0.0, q26);
+
+    // Committed RGB blobs migrate with the built-in warp. NO gradient ascent -- that only NARROWS
+    // ridges (it's anti-diffusion); the real surface tension is the MBO step further down.
+    float3 RGB = tex2D(sampler_main, uv).xyz * q3;
+
+    // ALPHA activation, screen-fixed so the MBO surface tension below stays coordinate-consistent.
+    float A = GetState(uv_orig);
+
+    // keep the face solid (screen space)
+    float headkill = smoothstep(0.09, 0.22, length((uv_orig - float2(q6, q7)) * float2(1.0, 0.75)));
+
+    // --- EMISSION (screen space, uv_orig): trail activation behind each hand's swept path + a weak
+    // seg-edge base, gated by a LOW-FREQUENCY noise mask so it lands as blobby patches. ---
+    float capL = SegDist(uv_orig, float2(q13, q14), float2(q15, q16));
+    float eL = q18 * smoothstep(q17, q17 * 0.30, capL);
+    float capR = SegDist(uv_orig, float2(q19, q20), float2(q21, q22));
+    float eR = q24 * smoothstep(q23, q23 * 0.30, capR);
+    float ehands = max(eL, eR);
+    // Base shed: the lingering MOTION-DECAY wake -- a FILLED, fading region where a limb swept, NOT the
+    // thin seg-edge diff. A filled source seeds rounder islands instead of a thin stringy outline.
+    float ebase = smoothstep(0.12, 0.50, MaskMotionDecay(uv_orig)) * q2;
+    float lown = tex3D(sampler_noisevol_hq, float3(uv_orig * q27, q1 * 0.25)).g;   // low-freq mask
+    // Deposit ONLY above the noise mean, ramping in -- factor*(noise-0.5), clamped. This carves the
+    // shed into distinct round ISLANDS instead of a continuous stringy trail (the noise IS the island
+    // shape, so the linear hand-path gets broken into blobs rather than dashed).
+    // Gentle noise MODULATION (not a hard/scaled 0-1 gate, which just kills emission): emission stays
+    // near full strength, the noise only BIASES where beads will form, and the MBO does the visible
+    // beading. Low bound is the knob: 0.9 = very subtle seed, 0.5 = stronger bias.
+    float island = lerp(0.4, 1.0, lown);               // (b) wider bias: low-noise regions carve valleys
+    float emit = (ehands + ebase) * headkill * island * 0.35;   // (a) lower activation so the field stays STRUCTURED (unsaturated) and the MBO has gradients to bead
+
+    // ===== SURFACE TENSION via MBO / threshold dynamics -- this IS mean-curvature flow. Blur the
+    // field, then push it toward a threshold CENTRED AT 0.5 (the indicator midpoint): a thin string
+    // blurs BELOW 0.5 and retracts/BEADS; a blob stays above and just shrinks slightly by curvature --
+    // so it does NOT invade. (A threshold below 0.5 lowers the bar and the high phase fills the screen.)
+    A = lerp(A, smoothstep(0.42, 0.58, GetBlurA2(uv_orig)), q29);
+
+    A = saturate(A + emit);                             // fresh emission added AFTER MBO (so it is not erased)
+
+    // ===== COMMIT: where the consolidated (blurred) activation is high, STAMP lava colour into RGB
+    // and CONSUME that activation. Once committed the blob lives in the RGB feedback and drifts. =====
+    float Ab = GetBlurA1(uv_orig);
+    float commit = smoothstep(0.14, 0.34, Ab);          // lower threshold: the now-lower activation still commits boldly
+    float3 lava = lerp(float3(0.75, 0.09, 0.36), float3(1.0, 0.55, 0.18), smoothstep(0.35, 0.72, Ab));
+    RGB = RGB + lava * commit * 0.22;                   // draw colour into RGB (stronger, so blobs read boldly)
+    A = A - commit * 0.030;                             // consume SLOWER -- activation lingers & keeps re-stamping the rounding shape
+
+    // activation fade -- MULTIPLICATIVE (exponential) so it fades quickly but not instantly: a smooth
+    // decay curve, no lingering slow drain. q32 ~ 0.9 -> gone in ~1s, leaving a brief visible window
+    // for the consolidation before the committed RGB blob drifts on alone.
+    A = A * q32;
+    A = A * (1.0 - q9);
+    RGB = min(RGB, float3(1.3, 1.3, 1.3)) * (1.0 - q9);
+
+    ret = RGB;
+    ret_a = A;
+}
+```
+
+comp_1=```
+shader_body
+{
+    // Committed blobs live in the RGB feedback. Render them as LIQUID-IN-LIQUID: a HARD interface,
+    // not a misty glow -- threshold the blob field with a NARROW band so the edge is crisp, and fill
+    // with solid lava. (No additive glow/bloom -- that was the mist.)
+    float3 blobs = tex2D(sampler_main, uv).xyz;
+    float d = max(max(blobs.x, blobs.y), blobs.z);       // blob "density"
+
+    float mask = smoothstep(0.17, 0.24, d);              // NARROW band = hard edge (widen for softer)
+    float3 lava = lerp(float3(0.80, 0.10, 0.34), float3(1.0, 0.56, 0.18), smoothstep(0.24, 0.60, d));
+
+    float3 bg = float3(0.045, 0.055, 0.085);
+    float2 dc = uv - 0.5;
+    bg = bg * (1.0 - dot(dc, dc) * 0.5);                 // vignette
+    float3 col = lerp(bg, lava, mask);                   // hard-edged blob over the dark stage
+
+    // --- the figure, drawn SOLID on top (photographic), so the face survives ---
+    float seg = MaskSeg(uv);
+    float3 vid = GetVideo(uv, 0.0).xyz;
+    col = lerp(col, vid, smoothstep(0.38, 0.60, seg));
+
+    ret = col;
+}
+```
