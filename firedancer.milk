@@ -1,0 +1,170 @@
+// DISSOLVE - the silhouette sheds molten blobs where a limb moves fast, and re-forms
+// when you hold still. After Lozano-Hemmer's "Treachery of Sanctuary" (become birds), but
+// the shed material is LAVA-LAMP blobs, not particles or ink.
+//
+// MECHANISM (a feedback density field -- no particle system):
+//   - The warp shader maintains a scalar "shed density" D in the feedback buffer (sampler_main).
+//   - EMISSION: D is added at the segmentation EDGE, weighted by MOTION, so a fast-moving limb
+//     sheds along its own boundary. Suppressed near the head (keep the face solid).
+//   - ADVECTION + CONSOLIDATION: D is advected each frame along a flow field taken from a
+//     TIME-WARPED smooth 3D noise texture (noisevol_hq, its 3rd axis driven by time). The flow
+//     points down the noise gradient, so density slides into the noise "wells" and CLUMPS into
+//     rounded blobs -- the noise field is the blobs' gravity. A little curl adds swirl; a gentle
+//     rise gives buoyancy. The wells drift as the noise animates, so the blobs morph like a lava lamp.
+//   - DECAY: D fades, so the wake dissolves behind the limb and the body re-forms when still.
+//   - The comp thresholds D into rounded lava blobs and draws the photographic figure solid on top.
+//
+// NOTE: uv.y = 0 is the TOP; pose() Y is bottom-up, flip it.
+[preset00]
+MILKDROP_PRESET_VERSION=201
+PSVERSION=2
+PSVERSION_WARP=2
+PSVERSION_COMP=2
+fRating=4.000000
+
+// We do our own advection/decay in the warp shader, so keep the built-in transform identity.
+fDecay=1
+zoom=1
+rot=0
+cx=0.5
+cy=0.5
+dx=0
+dy=0
+warp=0
+sx=1
+sy=1
+fWaveEnable=0
+wave_a=0
+
+per_frame_init_1=pstart = -1;
+
+// Straight video copy.
+per_frame_1=video_alpha_mode = 0;
+per_frame_2=video_alpha_value = 1.0;
+per_frame_3=video_alpha_init = 0.0;
+
+per_frame_4=pstart = if(below(pstart, 0), time, pstart);
+per_frame_5=age = time - pstart;
+
+// --- field dynamics (all tunable) ---
+per_frame_6=q1 = time * 0.14;    // noise 3rd-axis scroll -- the "time warp" that animates the flow
+per_frame_7=q2 = 1.30;           // emission gain
+per_frame_8=q3 = 0.945;          // per-frame decay of the field (lower = shorter wake)
+per_frame_9=q4 = 0.0032;         // consolidation: pull density down the noise gradient (blob gravity)
+per_frame_10=q5 = 0.0080; // 0.0016;        // buoyant rise (up)
+per_frame_11=q8 = 0.0020;        // swirl (curl of the noise)
+
+// --- head focal, to keep the face out of the dissolve (pose head, else seg top) ---
+per_frame_12=hconf = pose(JOINT_HEAD, POSE_CONF);
+per_frame_13=q6 = if(above(hconf, 0.3), pose(JOINT_HEAD, POSE_X), seg_cx);
+per_frame_14=q7 = if(above(hconf, 0.3), 1 - pose(JOINT_HEAD, POSE_Y), 1 - seg_cy - 0.20);
+
+// clear the feedback field on the first frames so it doesn't start from garbage
+per_frame_15=q9 = below(age, 0.12);
+
+// very slow, non-correlated x/y drift of the noise window -> breaks the ~7s z-axis loop
+per_frame_16=q10 = 1.0*sin(time*0.013);   // x drift, period ~8 min  (amplitude = wander distance)
+per_frame_17=q11 = 1.0*cos(time*0.009);   // y drift, period ~12 min, incommensurate with x and z
+
+// === AUDIO REACTIVITY -- flip these gates 1<->0 to A/B compare (bass A vs bass B) ===
+per_frame_18=gate_treb  = 1;   // TREBLE: local crisp-up (tighter consolidation + more curl)
+per_frame_19=gate_bassA = 1;   // BASS A: quick global OUTWARD PUSH from the body
+per_frame_20=gate_bassB = 0;   // BASS B: global FUZZ (blur the density field on a kick)
+per_frame_21=bassHit = min(max(bass - bass_att, 0), 1);   
+per_frame_22=bassEnv = max(bassHit, bassEnv*0.90);   // spike -> throb: fast attack, ~0.5s release
+per_frame_23=trebHit = gate_treb * max(treb - treb_att, 0);  // QUICK treble transient (per-hit, not building)
+per_frame_24=q16 = trebHit * 0.004;   
+per_frame_25=q17 = time * 0.6;      // q16 = fine-swirl burst strength; q17 = fine-noise scroll
+per_frame_26=q4 = q4 * (1 - 0.8*bassEnv);                     // bass suppression only (treble no longer builds q4)
+per_frame_27=// treble drives a QUICK, FINE-CELL swirl burst everywhere in the warp (q16) -- bold but small-scale
+per_frame_28=q12 = gate_bassA * bassEnv * 0.012;           // bass A: gentle sustained push -> attached throb
+per_frame_29=q13 = seg_cx;                                 // body centroid x
+per_frame_30=q14 = 1 - seg_cy;                             // body centroid y (seg is bottom-up; uv top-down)
+per_frame_31=q15 = gate_bassB * bassEnv;                   // bass B: fuzz mix (0..1), enveloped
+
+warp_1=```
+shader_body
+{
+    // --- flow field from time-warped smooth 3D noise ---
+    float2 ns = (uv - float2(q13, q14)) * max(0.5, 1 + bass - bass_att) + float2(q10, q11);  // feature scale + very slow x/y drift (anti-repetition)
+    float zt = q1;                        // animated 3rd axis
+    float d_ = 0.015;
+    float nC = tex3D(sampler_noisevol_hq, float3(ns,                    zt)).r;
+    float nX = tex3D(sampler_noisevol_hq, float3(ns + float2(d_, 0.0),  zt)).r;
+    float nY = tex3D(sampler_noisevol_hq, float3(ns + float2(0.0, d_),  zt)).r;
+    float2 grad = float2(nX - nC, nY - nC) / d_;         // noise gradient
+    float2 curl = float2(grad.y, -grad.x);               // perpendicular -> swirl
+
+    // flow (in uv units): down-gradient = consolidate into wells, + swirl, + buoyant rise
+    float2 flow = -grad * q4 + curl * (q8+q16) + float2(0.0, -1.0) * q5;
+
+    // BASS A: quick outward shove from the body centroid on a kick (q12 = strength, 0 when gated off)
+    float2 fromBody = uv - float2(q13, q14);
+    flow += (fromBody / (length(fromBody) + 0.05)) * q12;
+
+    // // TREBLE: quick FINE-CELL swirl, applied EVERYWHERE (bold) on each treble transient (q16).
+    // // A separate fine-scale noise curl -> lots of small swirls, not one big rotation.
+    // float2 fns = uv * 8.0;                                    // fine feature scale (bigger = smaller swirl cells)
+    // float  fnC = tex3D(sampler_noisevol_hq, float3(fns,                   q17)).r;
+    // float  fnX = tex3D(sampler_noisevol_hq, float3(fns + float2(d_, 0.0), q17)).r;
+    // float  fnY = tex3D(sampler_noisevol_hq, float3(fns + float2(0.0, d_), q17)).r;
+    // float2 fgrad = float2(fnX - fnC, fnY - fnC) / d_;
+    // flow += float2(fgrad.y, -fgrad.x) * q16;                  // perpendicular = swirl
+
+    // advect the density field: sample upstream (semi-Lagrangian), then decay
+    float D = tex2D(sampler_main, uv - flow).x * q3;
+
+    // --- emission at the MOVING seg edge, away from the head ---
+    float2 e_ = texsize.zw * 3.0;
+    float sx = MaskSeg(uv + float2(e_.x, 0.0)) - MaskSeg(uv - float2(e_.x, 0.0));
+    float sy = MaskSeg(uv + float2(0.0, e_.y)) - MaskSeg(uv - float2(0.0, e_.y));
+    float edge = saturate(sqrt(sx * sx + sy * sy) * 6.0);
+    float motion = saturate(MaskMotion(uv) * 4.0);
+    // 0 near the head (elliptical, taller than wide), 1 elsewhere
+    float headkill = 1.0; // smoothstep(0.09, 0.22, length((uv - float2(q6, q7)) * float2(1.0, 0.75)));
+    float emit = edge * motion * headkill * q2;
+
+    D = saturate(max(D, emit));
+
+    // BASS B: on a kick, blur the field toward its neighbourhood -> global fuzz / merge (q15 = mix)
+    float2 fb = texsize.zw * 4.0;
+    float Dblur = 0.25*(
+        tex2D(sampler_main, uv + float2(fb.x, 0.0)).x + tex2D(sampler_main, uv - float2(fb.x, 0.0)).x +
+        tex2D(sampler_main, uv + float2(0.0, fb.y)).x + tex2D(sampler_main, uv - float2(0.0, fb.y)).x);
+    D = lerp(D, Dblur, q15 * 0.45);
+
+    // startup clear
+    D = D * (1.0 - q9);
+
+    ret = float3(D, D, D);
+}
+```
+
+comp_1=```
+shader_body
+{
+    float D = tex2D(sampler_main, uv).x;
+
+    // --- lava blobs: threshold the density into rounded shapes, colour by density ---
+    float blob = smoothstep(0.16, 0.40, D);
+    float3 cool = float3(0.72, 0.06, 0.34);              // magenta (thin / old)
+    float3 hot  = float3(1.00, 0.52, 0.16);              // orange  (dense / fresh)
+    float3 lava = lerp(cool, hot, smoothstep(0.20, 0.70, D));
+
+    float3 bg = float3(0.045, 0.055, 0.085);             // dark stage
+    float2 dc = uv - 0.5;
+    bg = bg * (1.0 - dot(dc, dc) * 0.5);                 // vignette
+    float3 col = bg;
+
+    // soft outer glow, then the solid blob body
+    col = col + float3(0.5, 0.18, 0.28) * smoothstep(0.06, 0.34, D) * 0.35;
+    col = lerp(col, lava, blob);
+
+    // --- the figure, drawn SOLID on top (photographic), so the face survives ---
+    float seg = MaskSeg(uv);
+    float3 vid = GetVideo(uv, 0.0).rgb;
+    col = lerp(col, vid, 0.8*smoothstep(0.38, 0.60, seg));
+
+    ret = col;
+}
+```
