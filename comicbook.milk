@@ -1,0 +1,479 @@
+// COMIC BOOK - the opening titles of a comic-book movie, built live from the camera.
+//
+// Not a flipbook (one image, turned page after page) but a COMIC PAGE: a predesigned
+// grid of panels that fill in one at a time, like a photo-booth strip that assembles
+// into a comic. The layout is fixed and IS the storyboard -- each panel's shape sets
+// its framing:
+//   P0  tall left column  -> FULL-BODY action  (whole figure, head to toe)
+//   P1  wide top-right     -> BUST portrait     (chest-up)
+//   P2  small square       -> HEAD close-in     (tight on the face)
+//   P3  small square       -> HEAD / shoulders  (tight)
+//   P4  wide bottom hero    -> FULL-BODY hero    (whole figure again, the payoff)
+//
+// CADENCE (timer, NOT music): every DWELL seconds the camera holds on ONE panel,
+// blown up to fill the screen and updating LIVE so the subject sees their framed
+// comic shot and has time to pose. At the end of the dwell it FLASHES and freezes
+// that panel, and the camera slides to the next. Each panel is captured at its own
+// moment, so the finished page is a sequence of poses -- a comic strip.
+//
+// The freeze is free: the warp shader re-bakes ONLY the live panel each frame and
+// HOLDS every other pixel from the feedback buffer, so a captured panel stays pixel-
+// exact forever and the page accumulates.
+//
+// ENDING: after the last panel the camera PULLS BACK to reveal the whole assembled
+// page at once (the "here are all your shots" photo-booth reveal), holds, then
+// preset_complete hands off.
+//
+// The per-panel look reuses the flipbook's comic filter (CMYK cels + Ben-Day
+// halftone + bold ink), factored into Comic() below.
+//
+// NOTE: in these pixel shaders uv.y = 0 is the TOP edge (y increases downward).
+// pose() Y is bottom-up, so it is flipped (1 - Y) when used as a top-down center.
+[preset00]
+MILKDROP_PRESET_VERSION=201
+PSVERSION=2
+PSVERSION_WARP=2
+PSVERSION_COMP=2
+
+// Identity transform + no decay so a held (captured) panel stays pixel-exact.
+fWaveEnable=0
+fDecay=1
+zoom=1
+rot=0
+cx=0.5
+cy=0.5
+dx=0
+dy=0
+warp=0
+sx=1
+sy=1
+wave_a=0
+
+per_frame_init_1=pstart = -1;
+per_frame_init_2=lastidx = -2;
+per_frame_init_3=flasht = -10;
+per_frame_init_4=fired = 0;
+per_frame_init_5=camx = 0.5; camy = 0.5; cams = 1.05;
+per_frame_init_6=sfcx = 0.5; sfcy = 0.5; sfhh = 0.45;
+per_frame_init_7=sbcx = 0.5; sbcy = 0.4; sbhh = 0.28;
+per_frame_init_8=shcx = 0.5; shcy = 0.3; shhh = 0.16;
+per_frame_init_9=sawPerson = 0; mode = -1; lastmode = -2;
+
+// Straight video copy, no library-computed alpha.
+per_frame_1=video_alpha_mode = 0;
+per_frame_2=video_alpha_value = 1.0;
+per_frame_3=video_alpha_init = 0.0;
+
+// --- lifetime timeline ---
+per_frame_4=pstart = if(below(pstart, 0), time, pstart);   // capture preset start once
+per_frame_5=age = time - pstart;
+per_frame_6=N = 5;
+per_frame_7=INTRO = 0.5;      // detection window + blank page, then dive into panel 0
+per_frame_8=DWELL = 2.5;      // seconds the camera lives on each panel (pose time)
+per_frame_9=PULL = 1.6;       // pull-back-to-full-page duration
+per_frame_10=HOLD = 5.0;      // hold on the finished full-page view before handing off
+per_frame_11=capEnd = INTRO + N * DWELL;
+per_frame_12=inCap = above(age, INTRO) * below(age, capEnd);
+
+// active panel index (0..N-1 while capturing, else -1)
+per_frame_13=idx = if(inCap, min(floor((age - INTRO) / DWELL), N - 1), -1);
+per_frame_14=q1 = idx;
+
+// capture one-shot bookkeeping: fires when idx steps up (previous panel just froze),
+// and once more when idx drops to -1 at capEnd (the LAST panel freezes).
+per_frame_15=stepped = above(idx, lastidx) * above(lastidx, -1.5);
+per_frame_16=endcap = below(idx, -0.5) * above(lastidx, -0.5);
+per_frame_17=lastidx = idx;
+
+// --- pose-driven framing ---
+// Read the joints we need (pose Y is bottom-up, so top-down y = 1 - POSE_Y), each with a
+// confidence fallback to the seg centroid so the framing degrades gracefully. From the
+// head->hip span we get a body SCALE S, then derive three shots whose extents are sized to
+// the actual subject -- and every shot's TOP is above the head, so the head is never clipped.
+per_frame_18=headC = pose(JOINT_HEAD, POSE_CONF); headOK = above(headC, 0.25);
+per_frame_19=headX = if(headOK, pose(JOINT_HEAD, POSE_X), seg_cx); headY = if(headOK, 1 - pose(JOINT_HEAD, POSE_Y), 1 - seg_cy - 0.18);
+per_frame_20=noseC = pose(JOINT_NOSE, POSE_CONF); noseY = 1 - pose(JOINT_NOSE, POSE_Y); lex = pose(JOINT_L_EYE, POSE_X); ley = 1 - pose(JOINT_L_EYE, POSE_Y); rex = pose(JOINT_R_EYE, POSE_X); rey = 1 - pose(JOINT_R_EYE, POSE_Y); eyeC = min(pose(JOINT_L_EYE, POSE_CONF), pose(JOINT_R_EYE, POSE_CONF));
+per_frame_21=heartC = pose(JOINT_HEART, POSE_CONF); heartX = pose(JOINT_HEART, POSE_X); heartY = if(above(heartC,0.3), 1 - pose(JOINT_HEART, POSE_Y), 1 - seg_cy);
+per_frame_22=lhipY = 1 - pose(JOINT_L_HIP, POSE_Y); lhipC = pose(JOINT_L_HIP, POSE_CONF);
+per_frame_23=rhipY = 1 - pose(JOINT_R_HIP, POSE_Y); rhipC = pose(JOINT_R_HIP, POSE_CONF);
+per_frame_24=hipC = max(lhipC, rhipC); hipOK = above(hipC, 0.3); hipY0 = if(above(lhipC, rhipC), lhipY, rhipY);
+per_frame_25=lankY = 1 - pose(JOINT_L_ANKLE, POSE_Y); lankC = pose(JOINT_L_ANKLE, POSE_CONF);
+per_frame_26=rankY = 1 - pose(JOINT_R_ANKLE, POSE_Y); rankC = pose(JOINT_R_ANKLE, POSE_CONF);
+per_frame_27=ankC = max(lankC, rankC); ankOK = above(ankC, 0.3); ankY0 = if(above(lankC, rankC), lankY, rankY);
+// Body SCALE. Best: head->hip span (needs the torso). When the subject is too close for that,
+// fall back to a scale derived from the interocular distance (~10.5x IPD ~= head->hip span), so
+// the close-ups still track the real head size instead of a fixed guess. Last resort: 0.22.
+per_frame_28=torsoOK = headOK * hipOK; eyd = sqrt((lex - rex) * (lex - rex) + (ley - rey) * (ley - rey)); Sh = max(eyd * 10.5, 0.10); eyeOK = above(eyeC, 0.3); S = if(torsoOK, max(hipY0 - headY, 0.06), if(eyeOK, Sh, 0.22));
+per_frame_29=hipY = if(hipOK, hipY0, headY + S); bodyX = if(above(heartC, 0.3), heartX, headX);
+per_frame_30=headTop = headY - 0.22 * S; footY = if(ankOK, ankY0, hipY + 1.15 * S); bustB = heartY + 0.55 * S;
+// FULL-BODY: head-top -> feet; but if we cannot even see the hips (subject too close for a
+// full body to exist in frame) fall back to the bust extent instead of inventing legs.
+per_frame_31=fullB = if(hipOK, footY, bustB); tfullcx = bodyX; tfullcy = (headTop + fullB) * 0.5; tfullhh = (fullB - headTop) * 0.55;
+// BUST: head-top -> just below chest
+per_frame_32=tbustcx = bodyX; tbustcy = (headTop + bustB) * 0.5; tbusthh = (bustB - headTop) * 0.58;
+// HEAD close: tight on the face
+per_frame_33=theadcx = headX; theadcy = if(above(noseC, 0.3), noseY + 0.02, headY + 0.06 * S); theadhh = 0.20 * S;
+// EMA-smooth the nine framing values so the live preview does not swim
+per_frame_34=sfcx = sfcx + (tfullcx - sfcx) * 0.2; sfcy = sfcy + (tfullcy - sfcy) * 0.2; sfhh = sfhh + (tfullhh - sfhh) * 0.2;
+per_frame_35=sbcx = sbcx + (tbustcx - sbcx) * 0.2; sbcy = sbcy + (tbustcy - sbcy) * 0.2; sbhh = sbhh + (tbusthh - sbhh) * 0.2;
+per_frame_36=shcx = shcx + (theadcx - shcx) * 0.2; shcy = shcy + (theadcy - shcy) * 0.2; shhh = shhh + (theadhh - shhh) * 0.2;
+per_frame_37=q15 = sfcx; q16 = sfcy; q17 = sfhh;
+per_frame_38=q18 = sbcx; q19 = sbcy; q20 = sbhh;
+per_frame_39=q21 = shcx; q22 = shcy; q23 = shhh; q24 = headOK;   // q24: pose usable? (else scene crop)
+
+// --- camera: hold on the active panel (blown up to fill screen), pull back at the end ---
+// The active panel's rect (mirror of PanelRect() in the shaders).
+per_frame_40=ax = if(equal(idx,0),0.05, if(equal(idx,1),0.52, if(equal(idx,2),0.52, if(equal(idx,3),0.74, 0.05))));
+per_frame_41=ay = if(equal(idx,0),0.06, if(equal(idx,1),0.06, if(equal(idx,2),0.34, if(equal(idx,3),0.34, 0.73))));
+per_frame_42=bx = if(equal(idx,0),0.48, if(equal(idx,1),0.95, if(equal(idx,2),0.72, if(equal(idx,3),0.95, 0.95))));
+per_frame_43=by = if(equal(idx,0),0.62, if(equal(idx,1),0.30, if(equal(idx,2),0.62, if(equal(idx,3),0.62, 0.95))));
+per_frame_44=pw = bx - ax; ph = by - ay;
+// cover the screen with just the active panel (crop overflow -> only that panel visible)
+per_frame_45=tcx = if(inCap, (ax + bx) * 0.5, 0.5);
+per_frame_46=tcy = if(inCap, (ay + by) * 0.5, 0.5);
+per_frame_47=tcs = if(inCap, min(pw, ph) * 0.92, 1.06);
+per_frame_48=camx = camx + (tcx - camx) * 0.16;
+per_frame_49=camy = camy + (tcy - camy) * 0.16;
+per_frame_50=cams = cams + (tcs - cams) * 0.13;
+per_frame_51=q9 = camx; q10 = camy; q11 = cams;
+per_frame_52=q12 = min(max((age - capEnd) / PULL, 0), 1);   // pull-back progress 0..1
+
+// init-page flag: paint the blank page (paper + panel borders) during the intro
+// window; after that every non-live pixel just holds, so the page accumulates.
+per_frame_53=q13 = below(age, INTRO + 0.1);
+
+// --- presence detection -> mode ---
+// If nobody is in frame, six empty panels would read as nothing, so instead we do a
+// SPLASH: one full-frame comic of the live scene, a short hold, then hand off. A person
+// is "present" via pose confidence OR a valid seg mask covering >4% of the frame. The
+// decision is latched once, after the INTRO window (which also lets pose/seg warm up),
+// so the mode never flips mid-run. mode: -1 undecided, 0 = SPLASH, 1 = BOOTH.
+per_frame_54=present = max(above(heartC, 0.3), seg_valid * above(seg_coverage, 0.04));
+per_frame_55=sawPerson = max(sawPerson, present);
+per_frame_56=mode = if(equal(mode, -1) * above(age, INTRO), if(above(sawPerson, 0.5), 1, 0), mode);
+per_frame_57=q14 = mode;
+
+// --- flash: booth panel-captures + the splash slam-in share flasht ---
+per_frame_58=boothFlash = max(stepped, endcap) * equal(mode, 1);
+per_frame_59=splashIn = equal(mode, 0) * below(lastmode, -0.5);
+per_frame_60=flasht = if(max(boothFlash, splashIn), time, flasht);
+per_frame_61=lastmode = mode;
+per_frame_62=q8 = max(0, 1 - (time - flasht) * 4.5);   // flash decay (~0.22s)
+
+// --- end (one-shot preset_complete): booth after page+pullback+hold; splash after a beat ---
+per_frame_63=boothDone = above(age, capEnd + PULL + HOLD);
+per_frame_64=splashDone = above(age, INTRO + 1.7);
+per_frame_65=done = if(equal(mode, 1), boothDone, if(equal(mode, 0), splashDone, 0));
+per_frame_66=preset_complete = done * equal(fired, 0);
+per_frame_67=fired = if(done, 1, fired);
+
+warp_1=```
+// Predesigned page layout. Each panel is a rect (x0,y0)-(x1,y1) in page space
+// (y down). MUST match the per_frame mirror above that drives the camera.
+float4 PanelRect(int k)
+{
+    if (k == 0) return float4(0.05, 0.06, 0.48, 0.62);   // full-body action (tall left)
+    if (k == 1) return float4(0.52, 0.06, 0.95, 0.30);   // bust portrait (wide top-right)
+    if (k == 2) return float4(0.52, 0.34, 0.72, 0.62);   // head close (small square)
+    if (k == 3) return float4(0.74, 0.34, 0.95, 0.62);   // head close (small square)
+    return             float4(0.05, 0.73, 0.95, 0.95);   // burst: 3-frame motion strip (below the caption band)
+}
+
+// The comic look: CMYK-quantised cels + Ben-Day halftone + bold ink outlines.
+// vuv = where to read the (framed) video; suv = screen/buffer coord for the halftone;
+// age_ = how far back in the video history to read (0 = now), for the burst panel.
+float3 Comic(float2 vuv, float2 suv, float age_, float bgKnock, float3 bgCol, float noir)
+{
+    float3 L_ = float3(0.299, 0.587, 0.114);
+    float3 col_ = GetVideo(vuv, age_).rgb;
+    float lum_ = dot(col_, L_);
+    // Mask source: for a PAST frame (the burst cells) the CURRENT MaskSeg would not line up
+    // with the historical video. The app feeds the seg matte as source alpha and the library
+    // stores it per-slice (AlphaMode=Source), so the video history's own alpha IS the
+    // time-aligned mask -- use it for age > 0, and the refined MaskSeg for the live frame.
+    float seg_ = (age_ > 0.001) ? GetVideo(vuv, age_).a : MaskSeg(vuv);
+
+    if (noir > 0.5)
+    {
+        // --- NOIR: high-contrast monochrome -- deep blacks, stark whites, a few grey tones.
+        // No colour on the figure; the drama/variety comes from the per-cell bgCol flood below.
+        float v = saturate((lum_ - 0.44) * 1.9 + 0.44);   // crush contrast hard
+        v = floor(v * 4.0 + 0.5) / 4.0;                    // 5 tonal bands (limited greys)
+        col_ = float3(v, v, v);
+    }
+    else
+    {
+        // --- comic colouring: SHADED flats. Each area gets several tones (base / shadow /
+        // light) instead of one solid block, so the figure has form. Moderate saturation keeps
+        // colour variety, and a 5-level posterize gives shaded flats rather than 3 hard bands --
+        // the Ben-Day screen below then gradates between them.
+        float3 s_ = saturate(lerp(float3(lum_, lum_, lum_), col_, 1.85));
+        col_ = floor(s_ * 4.0 + 0.5) / 4.0;                  // 5 tone levels per channel
+
+        // desaturate the background; the subject keeps full colour
+        float clum_ = dot(col_, L_);
+        col_ = lerp(float3(clum_, clum_, clum_), col_, 0.22 + 0.78 * seg_);
+
+        // clean newsprint paper in the highlights, solid ink in the deepest darks
+        float3 paper_ = float3(0.97, 0.95, 0.88);
+        col_ = lerp(col_, paper_, smoothstep(0.82, 1.0, lum_) * 0.7);
+        col_ = col_ * smoothstep(0.02, 0.14, lum_);          // crush near-blacks toward ink
+    }
+
+    // Ben-Day halftone as a TINT: a regular dot screen that only appears in the mid-to-
+    // shadow tones. Highlights, clean flats and lit faces stay dot-free, and the deepest
+    // ink stays solid -- the way real Ben-Day shades a drawing instead of covering it.
+    float cell_ = 8.0;      // halftone dot pitch in buffer px (smaller = finer dots)
+    float2 cq = (suv * texsize.xy / cell_);
+    cq = (cq - floor(cq)) - 0.5;
+    float dd_ = length(cq) * 2.0;
+    float tone_ = smoothstep(0.78, 0.12, lum_);       // reaches into the MIDTONES -> shades more
+    float rad_ = tone_ * 0.95;                         // darker tone -> bigger dot
+    float dot_ = smoothstep(rad_, rad_ - 0.22, dd_);   // 1 inside the dot
+    float where_ = smoothstep(0.05, 0.15, lum_);       // fade out on near-black ink
+    col_ = col_ * (1.0 - dot_ * 0.5 * where_);
+
+    // bold ink outlines (Sobel on luminance)
+    float2 e_ = texsize.zw * 1.8;
+    float k00 = dot(GetVideo(vuv + float2(-e_.x, -e_.y), age_).rgb, L_);
+    float k10 = dot(GetVideo(vuv + float2( 0.0,  -e_.y), age_).rgb, L_);
+    float k20 = dot(GetVideo(vuv + float2( e_.x, -e_.y), age_).rgb, L_);
+    float k01 = dot(GetVideo(vuv + float2(-e_.x,  0.0),  0.0).rgb, L_);
+    float k21 = dot(GetVideo(vuv + float2( e_.x,  0.0),  0.0).rgb, L_);
+    float k02 = dot(GetVideo(vuv + float2(-e_.x,  e_.y), age_).rgb, L_);
+    float k12 = dot(GetVideo(vuv + float2( 0.0,   e_.y), age_).rgb, L_);
+    float k22 = dot(GetVideo(vuv + float2( e_.x,  e_.y), age_).rgb, L_);
+    float kx_ = (k20 + 2.0 * k21 + k22) - (k00 + 2.0 * k01 + k02);
+    float ky_ = (k02 + 2.0 * k12 + k22) - (k00 + 2.0 * k10 + k20);
+    float ink_ = smoothstep(0.10, 0.30, sqrt(kx_ * kx_ + ky_ * ky_));
+    col_ = col_ * (1.0 - ink_);
+
+    // optional: knock the background out toward bgCol so the subject pops. Used two ways:
+    // ink black on the super close-up (spotlight portrait), and paper on the burst (so the
+    // busy inked background does not read as motion streaks behind the figures).
+    col_ = lerp(bgCol, col_, lerp(1.0, smoothstep(0.35, 0.62, seg_), bgKnock));
+
+    return saturate(col_);
+}
+
+// Given a crop centre + full height (video-uv), aspect-fit it to a target aspect Atgt
+// ("cover", never sampling outside the frame so the history can't wrap/tile), then sample
+// the comic filter at panel-local coord plc and history age age_.
+float3 ComicCrop(float2 ctr, float ch, float Atgt, float2 plc, float2 suv, float age_, float bgKnock, float3 bgCol, float noir)
+{
+    float Av = texsize.x / texsize.y;
+    ch = max(ch, 0.08);
+    float cw = ch * Atgt / Av;
+    if (cw > 1.0) { ch = ch / cw; cw = 1.0; }
+    if (ch > 1.0) { cw = cw / ch; ch = 1.0; }
+    ctr = clamp(ctr, float2(cw * 0.5, ch * 0.5), 1.0 - float2(cw * 0.5, ch * 0.5));
+    float2 vuv = ctr + (plc - 0.5) * float2(cw, ch);
+    return Comic(vuv, suv, age_, bgKnock, bgCol, noir);
+}
+
+// A preprogrammed scene crop for panel k, used when pose is unavailable so a panel never
+// becomes a garbage zoom. Each run is jittered by rand_preset for some variety.
+void SceneCrop(int k, out float2 sctr, out float sch)
+{
+    if (k == 0)      { sctr = float2(0.50, 0.45); sch = 0.92; }   // wide establishing
+    else if (k == 1) { sctr = float2(0.34, 0.42); sch = 0.52; }   // left detail
+    else if (k == 2) { sctr = float2(0.66, 0.36); sch = 0.22; }   // upper-right detail (closer)
+    else if (k == 3) { sctr = float2(0.50, 0.55); sch = 0.15; }   // centre detail (tight)
+    else             { sctr = float2(0.50, 0.45); sch = 0.52; }   // burst medium
+    sctr = clamp(sctr + (rand_preset.xy - 0.5) * 0.24, float2(0.1, 0.1), float2(0.9, 0.9));
+}
+
+// Fill panel k with a comic-styled, framed crop of the video. pl = panel-local coord
+// (0..1). The panel's SHAPE picks the framing: full body / bust / head close / burst.
+// When pose is not usable (q24 == 0) each panel falls back to its SceneCrop instead.
+float3 ComicFramed(int k, float2 pl, float2 suv)
+{
+    float4 R = PanelRect(k);
+    float Ap = ((R.z - R.x) * texsize.x) / ((R.w - R.y) * texsize.y);   // panel aspect
+    float poseOK = q24;
+
+    float2 sctr;
+    float sch;
+    SceneCrop(k, sctr, sch);
+
+    if (k == 4)
+    {
+        // BURST: three sequential moments of the subject side by side -- a motion strip.
+        // Each cell reads the video HISTORY at a different age (left = oldest, right = now),
+        // so a single action becomes three comic frames. Framed as a bust per cell (medium,
+        // wide enough that the moving figure stays inside its cell), or the scene crop when
+        // pose is missing (still a burst -- three moments of the scene).
+        float cf = pl.x * 3.0;
+        int ci = clamp(int(floor(cf)), 0, 2);
+        float2 plc = float2(cf - float(ci), pl.y);
+        float age_ = float(2 - ci) * 0.16;                 // 0.32, 0.16, 0.0 : older -> newer
+        float Apc = Ap / 3.0;                              // one cell's aspect
+        float2 bctr = lerp(sctr, float2(q18, q19), poseOK);
+        float bch  = lerp(sch, 2.0 * q20, poseOK);
+
+        // NOIR strip: high-contrast monochrome figure on a per-cell dramatic background colour
+        // (night-blue / oxblood / amber) -- one style, three moods. The background is keyed by
+        // the TIME-ALIGNED history-alpha mask (see Comic), so the colour tracks each past frame
+        // exactly instead of lagging behind the figure.
+        float3 noirBg = float3(0.09, 0.15, 0.22);            // cell 0: cold night-blue
+        if (ci == 1) { noirBg = float3(0.26, 0.06, 0.07); }  // cell 1: oxblood
+        if (ci == 2) { noirBg = float3(0.28, 0.17, 0.05); }  // cell 2: dark amber
+        float3 c = ComicCrop(bctr, bch, Apc, plc, suv, age_, poseOK, noirBg, 1.0);
+
+        // thin ink dividers between the three frames
+        float dvd = min(abs(cf - 1.0), abs(cf - 2.0));
+        c = lerp(c, float3(0.05, 0.05, 0.06), 1.0 - smoothstep(0.0, 0.014, dvd));
+        return c;
+    }
+
+    // pose-derived single shots (centre + full crop height, computed in per_frame):
+    //   full = q15/q16/q17;  bust = q18/q19/q20;  head close = q21/q22/q23.
+    // The reading order is a deliberate push-in: wide establishing -> mid -> medium-close
+    // -> super-close, then the burst below pulls back out. The medium-close step is just a
+    // blend of the bust and head framings, so it needs no extra per_frame plumbing.
+    float2 pctr;
+    float pch;
+    if (k == 0)      { pctr = float2(q15, q16); pch = 2.0 * q17; }              // full body (widest, orient)
+    else if (k == 1) { pctr = float2(q18, q19); pch = 2.0 * q20; }              // bust (mid)
+    else if (k == 2) { pch = 4.0 * q23; pctr = float2(q21, q22 + pch * 0.22); } // close (head + shoulders)
+    else             { pctr = float2(q21, q22); pch = 2.0 * q23; }              // super close (tight face)
+
+    float2 ctr = lerp(sctr, pctr, poseOK);
+    float ch   = lerp(sch, pch, poseOK);
+    // black out the background ONLY on the super close-up, and only when pose is trustworthy
+    // (so the fallback scene-detail crop keeps its background).
+    float bgk = 0.0;
+    if (k == 3) { bgk = poseOK; }
+    return ComicCrop(ctr, ch, Ap, pl, suv, 0.0, bgk, float3(0.05, 0.04, 0.06), 0.0);
+}
+
+// The blank page: newsprint paper, lighter panel interiors, black inked borders.
+float3 PageBG(float2 p)
+{
+    float3 gutter = float3(0.90, 0.87, 0.79);   // page / gutter (newsprint cream)
+    float3 panelPaper = float3(0.97, 0.95, 0.90);
+    float3 ink = float3(0.06, 0.05, 0.06);
+    float3 col = gutter;
+    float tb = 0.006;   // border half-thickness (page units)
+    int k;
+    for (k = 0; k < 5; k = k + 1)
+    {
+        float4 R = PanelRect(k);
+        float ins = step(R.x, p.x) * step(p.x, R.z) * step(R.y, p.y) * step(p.y, R.w);
+        col = lerp(col, panelPaper, ins);
+
+        float dl = abs(p.x - R.x); float dr = abs(p.x - R.z);
+        float dt = abs(p.y - R.y); float db = abs(p.y - R.w);
+        float onV = (1.0 - smoothstep(0.0, tb, min(dl, dr))) * step(R.y - tb, p.y) * step(p.y, R.w + tb);
+        float onH = (1.0 - smoothstep(0.0, tb, min(dt, db))) * step(R.x - tb, p.x) * step(p.x, R.z + tb);
+        col = lerp(col, ink, max(onV, onH));
+    }
+    return col;
+}
+
+shader_body
+{
+    int idx_ = int(floor(q1 + 0.5));
+
+    // which panel is this pixel in? (rects do not overlap)
+    int pk_ = -1;
+    float2 pl_ = float2(0.0, 0.0);
+    int k_;
+    for (k_ = 0; k_ < 5; k_ = k_ + 1)
+    {
+        float4 R = PanelRect(k_);
+        if (uv.x >= R.x && uv.x <= R.z && uv.y >= R.y && uv.y <= R.w)
+        {
+            pk_ = k_;
+            pl_ = (uv - R.xy) / (R.zw - R.xy);
+        }
+    }
+
+    int live_ = 0;
+    if (idx_ >= 0) { if (pk_ == idx_) live_ = 1; }
+
+    int mode_ = int(floor(q14 + 0.5));   // -1 undecided, 0 splash, 1 booth
+
+    if (mode_ == 0)
+    {
+        // SPLASH (nobody in frame): one full-frame comic of the live scene.
+        float3 full = Comic(uv, uv, 0.0, 0.0, float3(0.05, 0.04, 0.06), 0.0);
+        ret = lerp(PageBG(uv), full, saturate(video_frame_count - 1.0));
+    }
+    else if (live_ == 1)
+    {
+        float3 shot = ComicFramed(pk_, pl_, uv);
+        // startup guard: until real video exists, keep the panel blank paper.
+        ret = lerp(PageBG(uv), shot, saturate(video_frame_count - 1.0));
+    }
+    else if (q13 > 0.5)
+    {
+        ret = PageBG(uv);            // blank page during the intro / undecided window
+    }
+    else
+    {
+        ret = tex2D(sampler_main, uv_orig).xyz;   // hold: frozen panels + page accumulate
+    }
+}
+```
+
+comp_1=```
+shader_body
+{
+    // Camera: a window of the page (buffer) mapped to the screen. During BOOTH capture
+    // it covers just the active panel (blown up), then pulls back to the whole page.
+    // In SPLASH / undecided mode it shows the full frame (the full-frame comic). Page
+    // space maps 1:1 to buffer uv and shares the screen aspect, so a single scalar zoom
+    // is distortion-free.
+    int mode_ = int(floor(q14 + 0.5));
+    float2 cc_ = float2(0.5, 0.5);
+    float cs_ = 1.0;
+    if (mode_ == 1) { cc_ = float2(q9, q10); cs_ = q11; }
+    float2 buv = cc_ + (uv - 0.5) * cs_;
+
+    // desk under the page (seen once we pull back past the page edges)
+    float3 desk = float3(0.07, 0.06, 0.05);
+    float2 dc = uv - 0.5;
+    float3 col = desk * (1.0 - dot(dc, dc) * 0.6);
+
+    float inpg = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
+    if (inpg > 0.5)
+    {
+        col = tex2D(sampler_main, buv).xyz;
+
+        // --- CAPTION in the band above the bottom row (cbcaption.png = sampler_fc_cbcaption) ---
+        // Fit the phrase to the band HEIGHT and RIGHT-align it, so a long line just leaves space
+        // on the left rather than being scaled up to fill the width. Page uv shares the screen
+        // aspect, so convert the texture's pixel aspect through texsize to keep the glyphs true.
+        float capAR = 14.7217;                    // cbcaption.png width / height
+        float2 b0 = float2(0.05, 0.635);          // caption band (page space, y down)
+        float2 b1 = float2(0.95, 0.715);
+        float As = texsize.x / texsize.y;
+        float textH = (b1.y - b0.y) * 0.72;       // leave a little vertical breathing room
+        float uW = textH * capAR / As;
+        float availW = (b1.x - b0.x) - 0.02;
+        if (uW > availW) { uW = availW; textH = uW * As / capAR; }   // clamp if it would overrun
+        float xR = b1.x - 0.02;                   // right margin
+        float yT = (b0.y + b1.y) * 0.5 - textH * 0.5;
+        float2 tuv = (buv - float2(xR - uW, yT)) / float2(uW, textH);
+        if (tuv.x > 0.0 && tuv.x < 1.0 && tuv.y > 0.0 && tuv.y < 1.0)
+        {
+            float cl = dot(tex2D(sampler_fc_cbcaption, tuv).rgb, float3(0.299, 0.587, 0.114));
+            float ink = 1.0 - smoothstep(0.35, 0.65, cl);   // dark glyphs -> ink
+            col = lerp(col, float3(0.09, 0.08, 0.10), ink);
+        }
+    }
+    else
+    {
+        // soft drop shadow of the page onto the desk
+        float2 dout = max(max(-buv, buv - 1.0), float2(0.0, 0.0));
+        float sh = saturate(1.0 - length(dout) * 22.0) * 0.6;
+        col = lerp(col, desk * 0.2, sh);
+    }
+
+    // capture flash: a clean white pop (no motion lines)
+    col = lerp(col, float3(1.0, 1.0, 1.0), q8 * 0.7);
+
+    ret = col;
+}
+```

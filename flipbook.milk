@@ -91,10 +91,10 @@ shader_body
 // hold (normal flipbook) -> zoom in -> a flurry of blank end-pages -> end.
 per_frame_4=pstart = if(below(pstart, 0), time, pstart);   // capture preset start once
 per_frame_5=age = time - pstart;                            // seconds since preset start
-per_frame_6=THOLD = 12.0;      // normal flipbook
-per_frame_7=TZOOM = 3.0;       // zoom-in lead-in (longer = slower zoom, ~2-3 more page-flips)
-per_frame_8=TBLANK = 1.1;      // blank end-page flurry
-per_frame_9=THZOOM = 3.0; zend = THOLD + TZOOM + THZOOM;  // hold at full zoom THZOOM secs before the blank flurry
+per_frame_6=THOLD = 6.0;       // normal flipbook (2x speed: was 12.0)
+per_frame_7=TZOOM = 1.5;       // zoom-in lead-in (2x speed: was 3.0)
+per_frame_8=TBLANK = 0.55;     // blank end-page flurry (2x speed: was 1.1)
+per_frame_9=THZOOM = 1.5; zend = THOLD + TZOOM + THZOOM;  // hold at full zoom (2x speed: was 3.0)
 per_frame_10=blank = above(age, zend);                     // 1 during the blank end-pages
 per_frame_11=enterblank = blank * equal(blanked, 0);       // one-shot: first blank frame
 per_frame_12=blanked = if(blank, 1, blanked);
@@ -127,14 +127,14 @@ per_frame_22=q5 = min(max(fy, 0.15), 0.85);   // warp: focal y
 // When the beat tracker is CONFIDENT (beat_conf), sync page turns to beat_onset
 // (debounced by PMIN, with a PMAX fallback so it never stalls). When confidence is
 // low, ignore beats and turn on a steady 0.4s. The blank end-flurry stays fast+fixed.
-per_frame_23=FW = 0.15;                  // page-turn duration
-per_frame_24=PMIN = 0.18;                // min seconds between beat-triggered flips
-per_frame_25=PMAX = 1.2;                 // turn anyway if this long passes with no beat
+per_frame_23=FW = 0.15;                  // page-turn duration (the "wipe"; left as-is -- judge after 2x)
+per_frame_24=PMIN = 0.09;                // min seconds between beat-triggered flips (2x speed: was 0.18)
+per_frame_25=PMAX = 0.6;                 // turn anyway if this long passes with no beat (2x speed: was 1.2)
 per_frame_26=hiconf = above(beat_conf, 0.5);                       // beat tracker confident?
 per_frame_27=ncbeat = above(beat_onset, 0.5) * above(time - last_t, PMIN);
 per_frame_28=ncsync = max(ncbeat, above(time - last_t, PMAX));     // beat mode (+ silence fallback)
-per_frame_29=ncsteady = above(time - last_t, 0.4);                 // low-confidence steady cadence
-per_frame_30=nc = if(blank, above(time - last_t, 0.28), if(hiconf, ncsync, ncsteady));
+per_frame_29=ncsteady = above(time - last_t, 0.2);                 // low-confidence steady cadence (2x speed: was 0.4)
+per_frame_30=nc = if(blank, above(time - last_t, 0.14), if(hiconf, ncsync, ncsteady));  // blank flurry 2x (was 0.28)
 // Also start a fresh page-turn (reset last_t) on the FIRST blank frame, so the
 // zoomed page cuts straight into a blank turn (no un-zoomed filtered frame flashes).
 per_frame_31=last_t = if(max(nc, enterblank), time, last_t);
@@ -213,7 +213,17 @@ shader_body
         // Set it to a literal to hardcode a filter (handy for reviewing one look),
         // or leave the rand_preset line active for a random per-preset choice
         // (rand_preset is constant for the lifetime of a preset).
-        int filt_ = int(floor(rand_preset.x * 5.9999));
+        //
+        // DISABLED: filter 1 (charcoal) and filter 3 (comic book) are turned off -- comic
+        // book now has its own dedicated comicbook.milk preset. Their code below is kept
+        // (unreachable) so they can be re-enabled by restoring the 0..5 pick. Pick only from
+        // the enabled set {0 watercolor, 2 line, 4 take-on-me, 5 harold}:
+        int pick_ = int(floor(rand_preset.x * 3.9999));   // 0..3
+        int filt_ = pick_;                                 // 0 -> 0 watercolor
+        if (pick_ == 1) { filt_ = 2; }                     // -> line
+        if (pick_ == 2) { filt_ = 4; }                     // -> take-on-me
+        if (pick_ == 3) { filt_ = 5; }                     // -> harold
+        //int filt_ = int(floor(rand_preset.x * 5.9999));  // original: all six
         //int filt_ = 5;
 
         // ---- SOURCE zoom (end-of-life): magnify the incoming video toward the subject BEFORE
@@ -309,7 +319,7 @@ shader_body
         }
         else if (filt_ == 1)
         {
-            // --- FILTER 1 - charcoal / pencil sketch ---
+            // --- FILTER 1 - charcoal / pencil sketch --- (DISABLED: not in the pick set above)
             // Sobel edges on video luminance -> dark strokes on warm paper, with
             // shading in the dark regions and a static paper-tooth grain.
             float2 e_ = texsize.zw * 2.0;
@@ -394,7 +404,7 @@ shader_body
         }
         else if (filt_ == 3)
         {
-            // --- FILTER 3 - comic book: flat cels + Ben-Day halftone + ink ---
+            // --- FILTER 3 - comic book: flat cels + Ben-Day halftone + ink --- (DISABLED: see comicbook.milk)
             float3 L_ = float3(0.299, 0.587, 0.114);
             float3 col_ = GetVideo(uv, 0.0).rgb;
             float lum_ = dot(col_, L_);

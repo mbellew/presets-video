@@ -1,0 +1,223 @@
+// Machine-code body -- the ORIGINAL Stahlregen "Machine Code" reaction-diffusion,
+// kept intact as a full-screen substrate, with a separate ALPHA reveal layer driven
+// by the live video subject. Derived from:
+//   Stahlregen & Boz - Machine Code (Reaction Diffusion)_1.milk
+//
+// Architecture (per design):
+//  * RD (rgb) runs exactly as the original -> rich machine-code structure everywhere.
+//  * The live seg mask seeds the RD activator (V/green) so code APPEARS on the person.
+//  * The main buffer's ALPHA channel is an independent visibility layer: the mask
+//    writes 1.0 on the silhouette; alpha is then advected by the SAME warp flow as the
+//    RD (read at uv, x-clamped off the wrap seam) so it rides the code with no relative
+//    smear, decays each frame, and is zeroed in a bottom band so it never wraps around.
+//    The comp draws code dark only where alpha is high -> you see code in your shape,
+//    and as you move the revealed trail rises with the flow and fades.
+//  * Music: bass = rain speed (dy), treble = seed sparkle, beat = code burst.
+MILKDROP_PRESET_VERSION=201
+PSVERSION=2
+PSVERSION_WARP=2
+PSVERSION_COMP=2
+[preset00]
+fRating=5.000000
+fGammaAdj=1.140
+fDecay=1.000
+fVideoEchoZoom=1.002
+fVideoEchoAlpha=0.000
+nVideoEchoOrientation=1
+nWaveMode=4
+bAdditiveWaves=0
+bWaveDots=0
+bWaveThick=1
+bModWaveAlphaByVolume=0
+bMaximizeWaveColor=1
+bTexWrap=1
+bDarkenCenter=0
+bRedBlueStereo=0
+bBrighten=0
+bDarken=0
+bSolarize=0
+bInvert=0
+fWaveAlpha=1.577
+fWaveScale=0.010
+fWaveSmoothing=0.000
+fWaveParam=-0.240
+fModWaveAlphaStart=0.500
+fModWaveAlphaEnd=1.000
+fWarpAnimSpeed=32.544
+fWarpScale=9.738
+fZoomExponent=1.00000
+fShader=0.000
+zoom=1.00000
+rot=0.00000
+cx=0.500
+cy=0.500
+dx=0.00000
+dy=0.00000
+warp=0.015000
+sx=1.00000
+sy=1.00000
+wave_r=0.500
+wave_g=0.500
+wave_b=0.500
+wave_x=0.500
+wave_y=0.000
+ob_size=0.005
+ob_r=0.010
+ob_g=0.000
+ob_b=0.000
+ob_a=0.600
+ib_size=0.260
+ib_r=0.250
+ib_g=0.250
+ib_b=0.250
+ib_a=0.000
+nMotionVectorsX=16.000
+nMotionVectorsY=16.800
+mv_dx=0.000
+mv_dy=0.000
+mv_l=0.150
+mv_r=1.000
+mv_g=0.000
+mv_b=0.000
+mv_a=0.000
+b1n=0.000
+b2n=0.000
+b3n=0.000
+b1x=1.000
+b2x=1.000
+b3x=1.000
+b1ed=0.250
+wavecode_0_enabled=0
+wavecode_1_enabled=0
+wavecode_2_enabled=0
+wavecode_3_enabled=0
+shapecode_0_enabled=0
+shapecode_1_enabled=0
+shapecode_2_enabled=0
+shapecode_3_enabled=0
+per_frame_init_1=//decay = 0.94
+per_frame_1=// substrate rains up (original -0.01). AUDIO OFF: bass term zeroed (0* -> 1* to restore)
+per_frame_2=dy = -(0.010 + 0*0.030*max(bass_att-1,0));
+per_frame_3=// relay beat detector into the shader via q vars
+per_frame_4=q1 = beat_phase;
+per_frame_5=q2 = beat_conf;
+per_frame_6=// original waveform seed colours (keep the RD alive as in the source preset)
+per_frame_7=red_rand = int(rand(100));
+per_frame_8=blue_rand = int(rand(100));
+per_frame_9=wave_r = 0.01*red_rand + 0.2*sin(time*1.311);
+per_frame_10=wave_b = 0.01*blue_rand - 0.2*sin(time*1.46);
+per_frame_11=wave_g = 1-0.5*(wave_r+wave_b)+ 0.2*cos(time*0.789);
+per_frame_12=// Source mode (0): GetVideo().a carries the app seg matte as-is
+per_frame_13=video_alpha_mode = 0;
+per_frame_14=video_alpha_value = 1.0;
+per_frame_15=video_alpha_init = 0.0;
+per_frame_16=// --- HEART: pose chest point + heartbeat envelope, passed to shaders via q3/q4/q5 ---
+per_frame_17=q3 = pose(JOINT_HEART, POSE_X);                       // heart x, [0,1] left->right
+per_frame_18=q4 = 1 - pose(JOINT_HEART, POSE_Y);                   // POSE_Y is bottom->top; shader uv is y-down
+per_frame_19=heart_thump = pow(max(cos(beat_phase),0), 4);         // beat_phase is 0..2PI (0=on beat); bump at beat, ^4 sharpens
+per_frame_20=q5 = pose_valid * (0.10 + 0.90*beat_conf*heart_thump);// baseline glow + beat-driven pulse
+warp_1=```
+shader_body
+{
+    float2 uv2 = uv;
+
+    // ===== ORIGINAL reaction-diffusion (unchanged) =====
+    float ss = 0.1;
+    float3 blur = 0.25*(
+        tex2D(sampler_main, uv2+ss*texsize.zw*float2( 1, 1)).xyz +
+        tex2D(sampler_main, uv2+ss*texsize.zw*float2(-1, 1)).xyz +
+        tex2D(sampler_main, uv2+ss*texsize.zw*float2( 1,-1)).xyz +
+        tex2D(sampler_main, uv2+ss*texsize.zw*float2(-1,-1)).xyz
+    );
+    ret = blur;
+    float F2 = 0.035;
+    float k2 = 0.060;
+    float scale = 4;
+    float3 z = ret;
+    float uvv = ret.x*ret.y*ret.y;
+    z.x += (-uvv + F2*(1-ret.x))*scale;
+    z.y += ( uvv - (F2+k2)*ret.y)*scale;
+    z.z += 0;
+    z.x += (GetBlur1(uv2) - GetPixel(uv2))*0.1*scale;
+    ret = z;
+    ret += 0.05*(tex2D(sampler_noise_lq, uv*texsize.xy*texsize_noise_lq.zw + rand_frame.xy).xyz*2-1);
+
+    // ===== live subject =====
+    // video_alpha_mode=0 => GetVideo().a is the ONNX seg matte; sampled at uv_orig
+    // (screen-fixed). MaskSeg folded in if the mask-layer pipeline is also on.
+    float subject = saturate(MaskSeg(uv_orig));
+
+    // seed the V activator (green) on the subject so code APPEARS on the body.
+    // scattered ignition points -> discrete rising code, not a solid blob.
+    float burst = 1.0 + 0*2.0*pow(max(cos(q1),0.0), 4.0)*q2; // beat burst OFF (0* -> 1* to restore); q1=beat_phase 0..2PI
+    float drive = burst * (0.7 + 0*0.6*max(treb_att-1,0)); // treble sparkle OFF (0* -> 1* to restore)
+    float snz = tex2D(sampler_noise_lq, uv_orig*texsize.xy*texsize_noise_lq.zw + rand_frame.xy).x;
+    ret.y = max(ret.y, subject * step(0.82, snz) * 0.55 * drive);
+
+    // ===== ALPHA reveal layer: advect with the flow (natural), decay, no wrap =====
+    // Read last frame's alpha at the SAME warped coord the RD samples (uv) so the reveal
+    // rides the code exactly -- moves up with dy, no relative smear. Then KILL a_prev in a
+    // 3-texel border (either axis): that's exactly where the read wraps or bilinear-bleeds
+    // across the seam. Killing (not clamping) leaves no frozen edge smear, and the live
+    // subject still writes there via the max below. texsize.zw = (1/width, 1/height).
+    // Advect up, and SPREAD horizontally so the oversaturated heart alpha climbs into a rising
+    // PINK PLUME (it widens over the many frames it spends rising). Gentle per-frame h-blur.
+    float a_prev = GetState(uv);
+    float2 hsp = float2(4.0*texsize.z,0.0);                                // horizontal spread (texels) -- widen for a fatter plume
+    float r = GetState(uv + hsp);
+    float l = GetState(uv - hsp);
+    a_prev = max(r,max(a_prev,l));
+    // Do NOT decay the oversaturated (>1) plume -- let it persist & spread; fade only the <1 trail.
+    a_prev *= (a_prev > 1.0) ? 1.0 : 0.95;
+    if (uv.y >= 1.0 || uv.x <= 0.0 || uv.x >= 1.0)
+        a_prev = 0.0;
+
+    // ===== HEART: OVERSATURATE alpha (>1) in a small disk at the pose heart, pulsing =====
+    // Round on screen (scale delta to pixels). q5 = heartbeat envelope (0 when no pose).
+    // The oversaturated value feeds back like any alpha -> it decays + rises = pink pulses.
+    float2 hd = (uv_orig - float2(q3, q4)) * texsize.xy;   // pixel-space delta
+    float heartMask = smoothstep(0.06*texsize.y, 0.0, length(hd)) * q5;
+    subject += 1.5 * heartMask;     // oversaturate ONLY at the heart (0 elsewhere); core -> ~2.5
+
+    // the live silhouette writes fresh full visibility; the trail is what rises+fades.
+    ret_a = max(a_prev, subject);
+}
+```
+comp_1=```
+shader_body
+{
+    // reveal mask: the scrolled/decayed alpha written by the warp pass
+    float rawA   = GetState(uv);        // RAW (may be >1 at the heart); reveal is the clamped copy
+    float reveal = saturate(rawA);
+
+    // ---- original code image (dark structures on a light base) ----
+    float3 lightbase = tex2D(sampler_main, (uv-0.5)*0.6+0.5).zzz;
+    float3 code = lightbase;
+    float crisp, blur;
+    float2 uv2;
+    float shadow_str = 1.25;
+    uv2 = (uv-0.5)*0.8+0.5;
+    crisp = tex2D(sampler_main, uv2).y;
+      blur  = GetBlur1(uv2).y;
+      code *= (1-blur*shadow_str);
+    code = max(code, crisp.xxx);
+    uv2 = uv;
+    crisp = tex2D(sampler_main, uv2).x;
+      blur  = GetBlur1(uv2).x;
+      code *= (1-blur*shadow_str);
+    code = max(code, crisp.xxx);
+
+    float heartGlow = saturate(rawA - 1.0);   // 0 at alpha<=1, ramps to 1 by alpha~1.8
+    code = lerp(code, code * float3(1.0, 0.30, 0.52), heartGlow); // oversaturated alpha tints the code pink
+
+    // ---- reveal: show the dark code ONLY where alpha is high; else clean base ----
+    ret = lerp(lightbase, code, reveal);
+
+    // subtle scanlines ("rows of code"); beat brightness pulse OFF (0* -> 1* to restore)
+    ret *= (0.90 + 0.10*sin(uv.y*texsize.y*0.5)) * (1.0 + 0.12*pow(max(cos(q1),0.0),4.0)*q2);
+
+    // ---- HEART glow: oversaturated alpha (>1) TINTS the revealed code pink (keeps the
+    // pattern -- like a normal alpha=1 reveal, just recolored), rather than flat pink ----
+    //ret = lerp(ret, ret * float3(1.0, 0.30, 0.52), heartGlow);
+}
+```
