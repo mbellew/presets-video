@@ -364,58 +364,72 @@ per_pixel_4=dx = 0;
 per_pixel_5=dy = 0;
 per_pixel_6=
 per_pixel_7=warp = 0;
-warp_1=`shader_body
-warp_2=`{
-warp_3=`    // sample previous frame
-warp_4=`    ret = tex2D( sampler_main, uv ).xyz;
-warp_5=`    
-warp_6=`    // darken (decay) over time
-warp_7=`    ret *= 1.00; //or try: ret -= 0.004;
-warp_8=`}
-comp_1=`shader_body
-comp_2=`{
-comp_3=`    float2 uv0 = uv;   // save ORIGINAL screen coords for the band overlay (ORB warps uv below)
-comp_4=`    uv[0] = uv[0] + 0.1*sin(q5*0.5 + uv[0]*20*(1 + 0.2*sin(q5*0.1)));
-comp_5=`    uv[1] = uv[1] + 0.1*cos(q5*0.7 + uv[1]*20*(1 + 0.2*sin(q5*0.12)));
-comp_6=`
-comp_7=`    ret = tex2D(sampler_main, uv).xyz;
-comp_8=`    ret *= 2.00; //gamma
+warp_1=```
+shader_body
+{
+    // sample previous frame
+    ret = tex2D( sampler_main, uv ).xyz;
+    
+    // darken (decay) over time
+    ret *= 1.00; //or try: ret -= 0.004;
+}
+```
+comp_1=```
+shader_body
+{
+    float2 uv0 = uv;   // save ORIGINAL screen coords for the band overlay (ORB warps uv below)
+    uv[0] = uv[0] + 0.1*sin(q5*0.5 + uv[0]*20*(1 + 0.2*sin(q5*0.1)));
+    uv[1] = uv[1] + 0.1*cos(q5*0.7 + uv[1]*20*(1 + 0.2*sin(q5*0.12)));
 
-comp_9=`    ret *= ret - ret*0.2; //darken
-comp_10=`
-comp_11=`    // --- Video bands over ORB. Slice the video into NBANDS horizontal bands in the middle
-comp_12=`    // 90% (vertically), each band its own slice in place; thin gaps show ORB through. uv.y=0 is TOP.
-comp_13=`    float3 bg = ret;  const float BGDIM = 0.10;  ret = bg * BGDIM;   // see-through bg dimmed to a faint hint
-comp_14=`    const float NBANDS = 20.0;
-comp_15=`    const float TOPY   = 0.05;             // middle 90% -> [0.05, 0.95]
-comp_16=`    const float BOTY   = 0.95;
-comp_17=`    const float GAP    = 0.12;             // fraction of each band cell that is gap
-comp_18=`    const float EDGE   = 0.02;             // soft edge on the gap (cell units)
-comp_19=`    const float SPIN   = 0.6;              // mirror spin speed (rad/sec), one direction
-comp_20=`    const float DPHASE = 0.5;              // phase advance per band -> helix twist
-comp_21=`    float tt = (uv0[1] - TOPY) / (BOTY - TOPY);
-comp_22=`    if (tt > 0.0 && tt < 1.0)
-comp_23=`    {
-comp_24=`        float cell = tt * NBANDS;
-comp_25=`        float band = floor(cell);
-comp_26=`        float f    = frac(cell);
-comp_27=`        float hg   = GAP * 0.5;
-comp_28=`        float m = smoothstep(hg - EDGE, hg + EDGE, f) *
-comp_29=`                  (1.0 - smoothstep(1.0 - hg - EDGE, 1.0 - hg + EDGE, f));
-comp_30=`        float cf = clamp((f - hg) / (1.0 - GAP), 0.0, 1.0);
-comp_31=`        float vy = (band + cf) / NBANDS;
-comp_32=`        // Continuously spinning DOUBLE-SIDED mirror strip (helix phase per band). The strip
-comp_33=`        // foreshortens to a sliver at edge-on; the reflection flips there (hidden at zero
-comp_34=`        // width), so a one-way spin reads as rotation, not a bounce.
-comp_35=`        float theta = time*SPIN + band*DPHASE;
-comp_36=`        float cth = cos(theta);
-comp_37=`        float ccomp = max(abs(cth), 0.06);          // horizontal foreshortening
-comp_38=`        float sx = 0.5 + (uv0[0] - 0.5) / ccomp;    // compress the video into the strip
-comp_39=`        sx = lerp(sx, 1.0 - sx, step(cth, 0.0));    // double-sided: back face = mirrored
-comp_40=`        float inside = smoothstep(0.0, 0.02, sx) * (1.0 - smoothstep(0.98, 1.0, sx));
-comp_41=`        float4 vid = GetVideo(float2(sx, vy), 0.0);
-comp_42=`        float3 patt = tex2D(sampler_main, float2(sx, vy)).xyz;  // ORB reflected in the strip too
-comp_43=`        float3 scene = lerp(patt, vid.xyz, vid.w);             // person over the reflected fire
-comp_44=`        ret = lerp(bg * BGDIM, scene, m * inside);             // strip = reflected scene; gaps = dim bg
-comp_45=`    }
-comp_46=`}
+    ret = tex2D(sampler_main, uv).xyz;
+    ret *= 2.00; //gamma
+    ret *= ret - ret*0.2; //darken
+
+    // --- Video bands over ORB. Slice the video into NBANDS horizontal bands in the middle
+    // 90% (vertically), each band its own slice in place; thin gaps show ORB through. uv.y=0 is TOP.
+    float3 bg = ret;  const float BGDIM = 0.10;  ret = bg * BGDIM;   // see-through bg dimmed to a faint hint
+    const float NBANDS = 20.0;
+    const float TOPY   = 0.05;             // middle 90% -> [0.05, 0.95]
+    const float BOTY   = 0.95;
+    const float GAP    = 0.12;             // fraction of each band cell that is gap
+    const float EDGE   = 0.02;             // soft edge on the gap (cell units)
+    const float SPIN   = 0.6;              // mirror spin speed (rad/sec), one direction
+    const float DPHASE = 0.5;              // peak phase advance per band -> helix twist
+    const float CYCLE  = 24.0;             // seconds: flat -> wind up -> helix -> wind down -> flat
+    float tt = (uv0[1] - TOPY) / (BOTY - TOPY);
+    if (tt > 0.0 && tt < 1.0)
+    {
+        float cell = tt * NBANDS;
+        float band = floor(cell);
+        float f    = frac(cell);
+        float hg   = GAP * 0.5;
+        float m = smoothstep(hg - EDGE, hg + EDGE, f) *
+                  (1.0 - smoothstep(1.0 - hg - EDGE, 1.0 - hg + EDGE, f));
+        float cf = clamp((f - hg) / (1.0 - GAP), 0.0, 1.0);
+        float vy = (band + cf) / NBANDS;
+        // Continuously spinning DOUBLE-SIDED mirror strip (helix phase per band). The strip
+        // foreshortens to a sliver at edge-on; the reflection flips there (hidden at zero
+        // width), so a one-way spin reads as rotation, not a bounce.
+        // Wind up / wind down: the per-band phase SPREAD ramps 0 -> DPHASE -> 0 over CYCLE. While it
+        // ramps, bands move at different speeds and fan into the helix; at the plateau they lock and
+        // spin together; ramping back down re-aligns them flat. Trapezoid with smoothstep edges.
+        float p  = frac(time / CYCLE);
+        float up = saturate((p - 0.05) / 0.25);  up = up*up*(3.0 - 2.0*up);   // 0.05..0.30 wind up
+        float dn = saturate((p - 0.60) / 0.25);  dn = dn*dn*(3.0 - 2.0*dn);   // 0.60..0.85 wind down
+        float spread = DPHASE * (up - dn);        // 0 flat .. DPHASE helix .. 0 flat
+        float theta = time*SPIN + spread*band;
+        float cth = cos(theta);
+        float ccomp = max(abs(cth), 0.06);          // horizontal foreshortening
+        float sx = 0.5 + (uv0[0] - 0.5) / ccomp;    // compress the video into the strip
+        sx = lerp(sx, 1.0 - sx, step(cth, 0.0));    // double-sided: back face = mirrored
+        float inside = smoothstep(0.0, 0.02, sx) * (1.0 - smoothstep(0.98, 1.0, sx));
+        float4 vid = GetVideo(float2(sx, vy), 0.0);
+        vid.xyz *= 1.5;
+        vid.xyz *= vid.xyz - vid.xyz*0.2;
+        float3 patt = tex2D(sampler_main, float2(sx, vy)).xyz;  // ORB reflected in the strip too
+        float3 scene = lerp(patt, vid.xyz, vid.w);             // person over the reflected fire
+        ret = lerp(bg * BGDIM, scene, m * inside);             // strip = reflected scene; gaps = dim bg
+    }
+}
+```
+

@@ -81,6 +81,7 @@ per_frame_28=q12 = gate_bassA * bassEnv * 0.012;           // bass A: gentle sus
 per_frame_29=q13 = seg_cx;                                 // body centroid x
 per_frame_30=q14 = 1 - seg_cy;                             // body centroid y (seg is bottom-up; uv top-down)
 per_frame_31=q15 = gate_bassB * bassEnv;                   // bass B: fuzz mix (0..1), enveloped
+per_frame_32=q18 = 0.2 + 0.6 * saturate(treb / 4);
 
 warp_1=```
 shader_body
@@ -163,7 +164,7 @@ shader_body
     // --- the figure, drawn SOLID on top (photographic), so the face survives ---
     float seg = MaskSeg(uv);
     float3 vid = GetVideo(uv, 0.0).rgb;
-    col = lerp(col, vid, 0.8*smoothstep(0.38, 0.60, seg));
+    col = lerp(col, vid, q18 * smoothstep(0.38, 0.60, seg));
 
     ret = col;
 }

@@ -283,6 +283,12 @@ per_frame_42=q6 = max(0, 1 - ptime/10); // sqrt(1 - min(1,ptime/10));
 per_frame_44=q4 = cos(ptime*2);
 per_frame_45=q5 = sin(ptime*2);
 per_frame_43=preset_complete = (above(ptime,10) * beat_onset) + above(ptime,12);
+// NAVEL anchor for the comp video rotation (bridged to shader uniforms q7/q8). Falls back to the
+// seg centroid when no one is tracked. The comp's GetVideo samples y-DOWN, but POSE_Y is y-UP, so
+// flip Y (1 - POSE_Y); with the near-centre seg centroid the flip was invisible, but the navel is
+// below centre so it matters -- raw Y put the head on the pivot.
+per_frame_46=q7 = if(pose_valid, pose(JOINT_NAVEL, POSE_X), seg_cx);
+per_frame_47=q8 = if(pose_valid, 1 - pose(JOINT_NAVEL, POSE_Y), seg_cy);
 
 per_pixel_1=du = (x*2-1) - q1;
 per_pixel_2=dv = (y*2-1) - q2;
@@ -342,7 +348,7 @@ shader_body
 
     //float tm = pow(1+time, -0.5);
     float size = q6; // max(tm, 0.01);
-    float2 center = float2(seg_cx, seg_cy);
+    float2 center = float2(q7, q8);   // rotate/centre the video around the NAVEL (q7,q8 from per_frame)
     // rotate the sampling offset by time/6 (cos=q4, sin=q5, precomputed in per_frame).
     // Rotate in aspect-corrected (isotropic) space so the rotation doesn't shear the video.
     float2 off = (uv-0.5)/size;
